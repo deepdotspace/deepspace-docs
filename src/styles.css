@@ -1,0 +1,234 @@
+@import "tailwindcss" source(none);
+
+/* Scan local source + SDK components for Tailwind class usage */
+@source "./**/*.{ts,tsx}";
+@source "../node_modules/deepspace/dist/**/*.js";
+
+/*
+ * Theme configuration — shadcn/ui-compatible token system.
+ * Pick a palette and replace this block to retheme the app.
+ */
+@theme {
+  /* shadcn core tokens — docs2 violet palette */
+  --color-background: #0a0f1a;
+  --color-foreground: #f1f5f9;
+  --color-card: #0f172a;
+  --color-card-foreground: #f1f5f9;
+  --color-popover: #0f172a;
+  --color-popover-foreground: #f1f5f9;
+  --color-primary: #8b5cf6;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #1e293b;
+  --color-secondary-foreground: #f1f5f9;
+  --color-muted: #1e293b;
+  --color-muted-foreground: #94a3b8;
+  --color-accent: #1e293b;
+  --color-accent-foreground: #f1f5f9;
+  --color-destructive: #ef4444;
+  --color-destructive-foreground: #ffffff;
+  --color-border: rgba(51, 65, 85, 0.5);
+  --color-input: rgba(51, 65, 85, 0.5);
+  --color-ring: rgba(139, 92, 246, 0.5);
+  --radius: 0.5rem;
+
+  /* Extended status colors */
+  --color-success: #10b981;
+  --color-success-foreground: #ffffff;
+  --color-warning: #f59e0b;
+  --color-warning-foreground: #ffffff;
+  --color-info: #3b82f6;
+  --color-info-foreground: #ffffff;
+
+  /* Shadows */
+  --shadow-card: 0 8px 32px rgba(0, 0, 0, 0.3);
+  --shadow-card-hover: 0 12px 40px rgba(0, 0, 0, 0.4);
+  --shadow-glow-violet: 0 0 24px rgba(139, 92, 246, 0.3);
+  --shadow-glow-cyan: 0 0 24px rgba(6, 182, 212, 0.3);
+  --shadow-glow-emerald: 0 0 24px rgba(16, 185, 129, 0.3);
+  --shadow-glow-amber: 0 0 24px rgba(245, 158, 11, 0.3);
+
+  /* Animations */
+  --animate-pulse-glow: pulse-glow 2s ease-in-out infinite;
+
+  /* Backward-compatibility aliases */
+  --color-surface: var(--color-background);
+  --color-surface-elevated: var(--color-card);
+  --color-surface-overlay: var(--color-muted);
+  --color-surface-input: rgba(30, 41, 59, 0.6);
+  --color-content: var(--color-foreground);
+  --color-content-secondary: var(--color-muted-foreground);
+  --color-content-muted: #64748b;
+  --color-content-inverse: #0f172a;
+  --color-border-strong: rgba(71, 85, 105, 0.5);
+  --color-border-focus: var(--color-ring);
+  --color-primary-hover: #a78bfa;
+  --color-primary-muted: rgba(139, 92, 246, 0.2);
+  --color-primary-border: rgba(139, 92, 246, 0.3);
+  --color-danger: var(--color-destructive);
+  --color-danger-muted: rgba(239, 68, 68, 0.2);
+  --color-danger-border: rgba(239, 68, 68, 0.4);
+  --color-success-muted: rgba(16, 185, 129, 0.2);
+  --color-success-border: rgba(16, 185, 129, 0.4);
+  --color-warning-muted: rgba(245, 158, 11, 0.2);
+  --color-warning-border: rgba(245, 158, 11, 0.4);
+  --color-info-muted: rgba(59, 130, 246, 0.2);
+  --color-info-border: rgba(59, 130, 246, 0.4);
+}
+
+[data-theme="light"] {
+  --color-background: #ffffff;
+  --color-foreground: #1e293b;
+  --color-card: #f8fafc;
+  --color-card-foreground: #1e293b;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #1e293b;
+  --color-primary: #7c3aed;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f1f5f9;
+  --color-secondary-foreground: #1e293b;
+  --color-muted: #f1f5f9;
+  --color-muted-foreground: #64748b;
+  --color-accent: #f1f5f9;
+  --color-accent-foreground: #1e293b;
+  --color-destructive: #dc2626;
+  --color-destructive-foreground: #ffffff;
+  --color-border: rgba(226, 232, 240, 1);
+  --color-input: rgba(226, 232, 240, 1);
+  --color-ring: rgba(124, 58, 237, 0.4);
+
+  --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-card-hover: 0 8px 24px rgba(0, 0, 0, 0.12);
+
+  --color-surface: #ffffff;
+  --color-surface-elevated: #f8fafc;
+  --color-surface-overlay: #f1f5f9;
+  --color-surface-input: rgba(241, 245, 249, 0.8);
+  --color-content: #1e293b;
+  --color-content-secondary: #64748b;
+  --color-content-muted: #94a3b8;
+  --color-content-inverse: #f1f5f9;
+  --color-border-strong: rgba(203, 213, 225, 1);
+  --color-border-focus: rgba(124, 58, 237, 0.4);
+  --color-primary-hover: #6d28d9;
+  --color-primary-muted: rgba(124, 58, 237, 0.1);
+  --color-primary-border: rgba(124, 58, 237, 0.3);
+  --color-danger: #dc2626;
+  --color-danger-muted: rgba(220, 38, 38, 0.1);
+  --color-danger-border: rgba(220, 38, 38, 0.3);
+  --color-success-muted: rgba(16, 185, 129, 0.1);
+  --color-success-border: rgba(16, 185, 129, 0.3);
+  --color-warning-muted: rgba(245, 158, 11, 0.1);
+  --color-warning-border: rgba(245, 158, 11, 0.3);
+  --color-info-muted: rgba(59, 130, 246, 0.1);
+  --color-info-border: rgba(59, 130, 246, 0.3);
+}
+
+/*
+ * Animation keyframes for shadcn components.
+ * These replace the tailwindcss-animate plugin which is not compatible with Tailwind v4.
+ */
+@keyframes animate-in {
+  from { opacity: var(--tw-enter-opacity, 1); transform: translate3d(var(--tw-enter-translate-x, 0), var(--tw-enter-translate-y, 0), 0) scale3d(var(--tw-enter-scale, 1), var(--tw-enter-scale, 1), var(--tw-enter-scale, 1)) rotate(var(--tw-enter-rotate, 0)); }
+}
+
+@keyframes animate-out {
+  to { opacity: var(--tw-exit-opacity, 1); transform: translate3d(var(--tw-exit-translate-x, 0), var(--tw-exit-translate-y, 0), 0) scale3d(var(--tw-exit-scale, 1), var(--tw-exit-scale, 1), var(--tw-exit-scale, 1)) rotate(var(--tw-exit-rotate, 0)); }
+}
+
+@utility animate-in {
+  animation-name: animate-in;
+  animation-duration: 150ms;
+  --tw-enter-opacity: initial;
+  --tw-enter-scale: initial;
+  --tw-enter-translate-x: initial;
+  --tw-enter-translate-y: initial;
+  --tw-enter-rotate: initial;
+}
+
+@utility animate-out {
+  animation-name: animate-out;
+  animation-duration: 150ms;
+  --tw-exit-opacity: initial;
+  --tw-exit-scale: initial;
+  --tw-exit-translate-x: initial;
+  --tw-exit-translate-y: initial;
+  --tw-exit-rotate: initial;
+}
+
+@utility fade-in-0 { --tw-enter-opacity: 0; }
+@utility fade-out-0 { --tw-exit-opacity: 0; }
+@utility zoom-in-95 { --tw-enter-scale: .95; }
+@utility zoom-out-95 { --tw-exit-scale: .95; }
+@utility slide-in-from-top-2 { --tw-enter-translate-y: -0.5rem; }
+@utility slide-in-from-bottom-2 { --tw-enter-translate-y: 0.5rem; }
+@utility slide-in-from-left-2 { --tw-enter-translate-x: -0.5rem; }
+@utility slide-in-from-right-2 { --tw-enter-translate-x: 0.5rem; }
+@utility slide-out-to-top-2 { --tw-exit-translate-y: -0.5rem; }
+@utility slide-out-to-bottom-2 { --tw-exit-translate-y: 0.5rem; }
+@utility slide-out-to-left-2 { --tw-exit-translate-x: -0.5rem; }
+@utility slide-out-to-right-2 { --tw-exit-translate-x: 0.5rem; }
+
+
+/*
+ * Custom base styles — must be in @layer base so utility classes can override.
+ */
+@layer base {
+  html, body, #root {
+    min-height: 100vh;
+    background-color: var(--color-background);
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-size: 14px;
+    color: var(--color-foreground);
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border-radius: 0.25rem;
+    background-color: var(--color-border);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-muted-foreground);
+  }
+
+  /* Selection styling */
+  ::selection {
+    background-color: var(--color-primary);
+    color: var(--color-primary-foreground);
+  }
+
+  /* Focus states for accessibility */
+  *:focus-visible {
+    outline-style: solid;
+    outline-width: 2px;
+    outline-offset: 2px;
+    outline-color: var(--color-primary);
+  }
+
+  /* Prevent 300ms tap delay on mobile */
+  a, button, [role="button"], input, select, textarea {
+    touch-action: manipulation;
+  }
+
+  /* Form input calendar icons (dark mode invert) */
+  input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+  input[type="date"]::-webkit-calendar-picker-indicator {
+    filter: invert(0.7);
+  }
+}

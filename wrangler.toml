@@ -1,0 +1,41 @@
+name = "docs2"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+main = "worker.ts"
+
+[assets]
+directory = "dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/ws/*", "/internal/*"]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AppRecordRoom", "AppYjsRoom", "AppCanvasRoom", "AppMediaRoom", "AppPresenceRoom"]
+
+[durable_objects]
+bindings = [
+  { name = "RECORD_ROOMS", class_name = "AppRecordRoom" },
+  { name = "YJS_ROOMS", class_name = "AppYjsRoom" },
+  { name = "CANVAS_ROOMS", class_name = "AppCanvasRoom" },
+  { name = "MEDIA_ROOMS", class_name = "AppMediaRoom" },
+  { name = "PRESENCE_ROOMS", class_name = "AppPresenceRoom" },
+]
+
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "docs2-files"
+
+[vars]
+APP_NAME = "docs2"
+
+[dev]
+port = 8781
+inspector_port = 9238
+
+# Secrets (set via `wrangler secret put` or written by `deepspace dev`):
+#   AUTH_JWT_PUBLIC_KEY
+#   AUTH_JWT_ISSUER
+#   AUTH_WORKER_URL
+#   OWNER_USER_ID
+#   INTERNAL_STORAGE_HMAC_SECRET
