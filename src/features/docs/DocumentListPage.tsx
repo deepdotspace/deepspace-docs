@@ -14,9 +14,18 @@
  * DO — see `DocumentEditorPage`.
  */
 
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQuery, useMutations, useUser, type RecordData } from 'deepspace'
+import { motion } from 'framer-motion'
+import {
+  useQuery,
+  useMutations,
+  useUser,
+  useAuth,
+  AuthOverlay,
+  signOut,
+  type RecordData,
+} from 'deepspace'
 import {
   FileText,
   Plus,
@@ -33,23 +42,51 @@ import {
   Link2,
   Check,
   SortAsc,
-  Sun,
-  Moon,
+  Folder,
+  ChevronRight,
+  MoreVertical,
 } from 'lucide-react'
-import { useTheme } from '../../hooks'
-import { Modal, SearchInput } from '../../components/ui'
+import { DocumentPreview } from './DocumentPreview'
+import {
+  LibrarySidebar,
+  readSidebarCollapsed,
+  writeSidebarCollapsed,
+} from './LibrarySidebar'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+  Modal,
+  SearchInput,
+  UserProfileButton,
+} from '../../components/ui'
 import {
   TEMPLATES,
   SORT_OPTIONS,
   type DocumentFields,
+  type DocFolderFields,
   type ContentShareFields,
   type DocTemplate,
+  type LibraryNavSelection,
   type SortOption,
   type ViewMode,
 } from './types'
 import { getFavorites, saveFavorites } from './favorites'
 
 type Share = RecordData<ContentShareFields>
+
+function greetingForTime(): string {
+  const h = new Date().getHours()
+  if (h < 12) return 'Good morning'
+  if (h < 17) return 'Good afternoon'
+  return 'Good evening'
+}
 
 // ---------------------------------------------------------------------------
 // Sort utility
@@ -81,12 +118,15 @@ export interface DocumentListPageProps {
 export default function DocumentListPage({ browseUserId }: DocumentListPageProps = {}) {
   const navigate = useNavigate()
   const { user } = useUser()
-  const { theme, toggle: toggleTheme } = useTheme()
+  const { isSignedIn } = useAuth()
 
   const isOwnScope = !browseUserId
 
   const { records: documents } = useQuery<DocumentFields>('documents')
   const { create, put, remove } = useMutations<DocumentFields>('documents')
+
+  const { records: folderRecords } = useQuery<DocFolderFields>('doc_folders')
+  const { create: createFolder, remove: removeFolder } = useMutations<DocFolderFields>('doc_folders')
 
   const { records: allShares } = useQuery<ContentShareFields>('content_shares')
   const { create: createShare, put: putShare, remove: removeShare } = useMutations<ContentShareFields>('content_shares')
@@ -100,6 +140,40 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
   const [showTemplates, setShowTemplates] = useState(false)
   const [showSortDropdown, setShowSortDropdown] = useState(false)
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+  const [showAuthModal, setShowAuthModal] = useState(false)
+  const [libraryNav, setLibraryNav] = useState<LibraryNavSelection>({ kind: 'all' })
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed)
+
+  useEffect(() => {
+    if (libraryNav.kind !== 'folder') return
+    const exists = (folderRecords ?? []).some((f) => f.recordId === libraryNav.folderId)
+    if (!exists) setLibraryNav({ kind: 'all' })
+  }, [folderRecords, libraryNav])
+
+  const displayFirstName = user?.name?.trim().split(/\s+/)[0] ?? 'there'
+
+  const myFolders = useMemo(() => {
+    if (!user?.id) return []
+    return (folderRecords ?? []).filter((f) => f.data.ownerId === user.id)
+  }, [folderRecords, user?.id])
+
+  const sortedFolders = useMemo(
+    () => [...myFolders].sort((a, b) => (a.data.name ?? '').localeCompare(b.data.name ?? '')),
+    [myFolders],
+  )
+
+  const listControlsHeading = useMemo((): string => {
+    if (!isOwnScope) return 'All documents'
+    if (libraryNav.kind === 'favorites') return 'Favorites'
+    if (libraryNav.kind === 'uncategorized') return 'Uncategorized'
+    if (libraryNav.kind === 'folder') {
+      return (
+        sortedFolders.find((f) => f.recordId === libraryNav.folderId)?.data.name?.trim() || 'Folder'
+      )
+    }
+    return 'My Documents'
+  }, [isOwnScope, libraryNav, sortedFolders])
 
   const docPath = (docId: string) =>
     browseUserId ? `/browse/${browseUserId}/doc/${docId}` : `/doc/${docId}`
@@ -110,19 +184,57 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     return map
   }, [documents])
 
-  const myShares = useMemo(() => {
-    if (!user?.id) return []
+  /** Per-doc "self" share (or first) indexed by content id. */
+  const mySharesByContentId = useMemo(() => {
+    if (!user?.id) return new Map<string, Share>()
     const byContentId = new Map<string, Share>()
     for (const s of allShares ?? []) {
       if (s.data.ContentType !== 'document' || s.data.OwnerId !== user.id) continue
-      if (!docLookup.has(s.data.ContentId)) continue
       const existing = byContentId.get(s.data.ContentId)
       if (!existing || s.data.ShareType === 'self') {
         byContentId.set(s.data.ContentId, s)
       }
     }
-    return Array.from(byContentId.values())
-  }, [allShares, user?.id, docLookup])
+    return byContentId
+  }, [allShares, user?.id])
+
+  /**
+   * My documents list, keyed from `documents` so we never miss a new doc when
+   * the `content_shares` row and the `documents` row hit the client in either order.
+   */
+  const myShares = useMemo(() => {
+    if (!user?.id) return []
+    const out: Share[] = []
+    const now = new Date().toISOString()
+    for (const d of documents ?? []) {
+      if (d.data.ownerId !== user.id) continue
+      const s = mySharesByContentId.get(d.recordId)
+      if (s) {
+        out.push(s)
+      } else {
+        // Share row not synced yet — show the doc with metadata from the record.
+        out.push({
+          recordId: `__pending__:${d.recordId}`,
+          data: {
+            ContentType: 'document',
+            ContentId: d.recordId,
+            OwnerId: user.id,
+            OwnerName: user.name ?? 'Anonymous',
+            Title: d.data.title,
+            ShareType: 'self',
+            ShareTarget: '',
+            Permission: 'edit',
+            SharedAt: now,
+            SharedBy: user.id,
+            SourceApp: 'docs2',
+            WordCount: 0,
+            LastEditedAt: now,
+          },
+        } as Share)
+      }
+    }
+    return out
+  }, [documents, mySharesByContentId, user])
 
   const filterBySearch = (shares: Share[]) => {
     if (!searchQuery.trim()) return shares
@@ -149,30 +261,88 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     [myShares, favorites],
   )
 
+  const shareMatchesLibraryNav = useCallback(
+    (share: Share) => {
+      const doc = docLookup.get(share.data.ContentId)
+      const fid = doc?.data.folderId ?? ''
+      if (libraryNav.kind === 'all') return true
+      if (libraryNav.kind === 'favorites') return favorites.has(share.data.ContentId)
+      if (libraryNav.kind === 'uncategorized') return fid === ''
+      if (libraryNav.kind === 'folder') return fid === libraryNav.folderId
+      return true
+    },
+    [libraryNav, docLookup, favorites],
+  )
+
+  const filteredFavoriteDocs = useMemo(
+    () => favoriteDocs.filter(shareMatchesLibraryNav),
+    [favoriteDocs, shareMatchesLibraryNav],
+  )
+  const filteredPrivateDocs = useMemo(
+    () => privateDocs.filter(shareMatchesLibraryNav),
+    [privateDocs, shareMatchesLibraryNav],
+  )
+  const filteredPublicDocs = useMemo(
+    () => publicDocs.filter(shareMatchesLibraryNav),
+    [publicDocs, shareMatchesLibraryNav],
+  )
+
   // Browse mode: show public docs owned by `browseUserId`.
   // Server-side RBAC (visibilityField on the documents schema) already
   // hides private docs from viewers, so we just match to existing records.
-  const browseDocs = useMemo(() => {
-    if (!browseUserId) return []
+  const browseSharesByContentId = useMemo(() => {
+    if (!browseUserId) return new Map<string, Share>()
     const byContentId = new Map<string, Share>()
     for (const s of allShares ?? []) {
       if (s.data.ContentType !== 'document' || s.data.OwnerId !== browseUserId) continue
-      if (!docLookup.has(s.data.ContentId)) continue
       const existing = byContentId.get(s.data.ContentId)
       if (!existing || s.data.ShareType === 'self') {
         byContentId.set(s.data.ContentId, s)
       }
     }
-    return Array.from(byContentId.values())
-  }, [allShares, browseUserId, docLookup])
+    return byContentId
+  }, [allShares, browseUserId])
+
+  const browseDocs = useMemo(() => {
+    if (!browseUserId) return []
+    const out: Share[] = []
+    const now = new Date().toISOString()
+    for (const d of documents ?? []) {
+      if (d.data.ownerId !== browseUserId) continue
+      if (d.data.visibility !== 'public') continue
+      const s = browseSharesByContentId.get(d.recordId)
+      if (s) {
+        out.push(s)
+      } else {
+        out.push({
+          recordId: `__pending__:${d.recordId}`,
+          data: {
+            ContentType: 'document',
+            ContentId: d.recordId,
+            OwnerId: browseUserId,
+            OwnerName: 'User',
+            Title: d.data.title,
+            ShareType: 'self',
+            ShareTarget: '',
+            Permission: 'view',
+            SharedAt: now,
+            SharedBy: browseUserId,
+            SourceApp: 'docs2',
+            WordCount: 0,
+            LastEditedAt: now,
+          },
+        } as Share)
+      }
+    }
+    return out
+  }, [documents, browseUserId, browseSharesByContentId])
 
   const sharesForContent = useCallback(
     (contentId: string) => (allShares ?? []).filter((s) => s.data.ContentId === contentId),
     [allShares],
   )
 
-  const toggleFavorite = useCallback((e: React.MouseEvent, contentId: string) => {
-    e.stopPropagation()
+  const toggleFavoriteById = useCallback((contentId: string) => {
     setFavoritesState((prev) => {
       const next = new Set(prev)
       if (next.has(contentId)) next.delete(contentId)
@@ -186,10 +356,13 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     if (!user) return
     const title = template?.name ?? 'Untitled Document'
     const now = new Date().toISOString()
+    const folderIdForNew =
+      libraryNav.kind === 'folder' ? libraryNav.folderId : ''
     const recordId = await create({
       title,
       ownerId: user.id,
       visibility: 'private',
+      folderId: folderIdForNew,
     })
     await createShare({
       ContentType: 'document',
@@ -208,7 +381,7 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     })
     const query = template ? `?template=${encodeURIComponent(template.content)}` : ''
     navigate(docPath(recordId) + query)
-  }, [create, createShare, navigate, user])
+  }, [create, createShare, libraryNav, navigate, user])
 
   const handleCreateFromTemplate = useCallback(
     async (template: DocTemplate) => {
@@ -218,9 +391,8 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     [handleCreate],
   )
 
-  const handleCopyLink = useCallback(
-    (e: React.MouseEvent, share: Share) => {
-      e.stopPropagation()
+  const copyShareLink = useCallback(
+    (share: Share) => {
       if (!user) return
       const url = `${window.location.origin}/browse/${user.id}/doc/${share.data.ContentId}`
       navigator.clipboard.writeText(url).then(() => {
@@ -231,9 +403,8 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     [user],
   )
 
-  const handleDelete = useCallback(
-    async (e: React.MouseEvent, contentId: string) => {
-      e.stopPropagation()
+  const deleteDocument = useCallback(
+    async (contentId: string) => {
       if (!confirm('Delete this document?')) return
       await remove(contentId)
       const shares = sharesForContent(contentId)
@@ -242,14 +413,10 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     [remove, removeShare, sharesForContent],
   )
 
-  const handleStartRename = useCallback(
-    (e: React.MouseEvent, share: Share) => {
-      e.stopPropagation()
-      setRenamingId(share.data.ContentId)
-      setRenameValue(share.data.Title)
-    },
-    [],
-  )
+  const startRename = useCallback((share: Share) => {
+    setRenamingId(share.data.ContentId)
+    setRenameValue(share.data.Title)
+  }, [])
 
   const handleRename = useCallback(
     async (contentId: string) => {
@@ -269,9 +436,8 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     [put, putShare, renameValue, sharesForContent, docLookup],
   )
 
-  const handleToggleVisibility = useCallback(
-    async (e: React.MouseEvent, share: Share) => {
-      e.stopPropagation()
+  const toggleShareVisibility = useCallback(
+    async (share: Share) => {
       const doc = docLookup.get(share.data.ContentId)
       if (!doc) return
       const newVisibility = doc.data.visibility === 'public' ? 'private' : 'public'
@@ -280,7 +446,236 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     [put, docLookup],
   )
 
+  const toggleSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsed((c) => {
+      const next = !c
+      writeSidebarCollapsed(next)
+      return next
+    })
+  }, [])
+
+  const handleCreateFolder = useCallback(
+    async (name: string) => {
+      if (!user) return
+      await createFolder({
+        name,
+        ownerId: user.id,
+      })
+    },
+    [createFolder, user],
+  )
+
+  const handleDeleteFolder = useCallback(
+    async (folderId: string) => {
+      const owned = (documents ?? []).filter(
+        (d) => d.data.ownerId === user?.id && (d.data.folderId ?? '') === folderId,
+      )
+      await Promise.all(
+        owned.map((d) => put(d.recordId, { ...d.data, folderId: '' })),
+      )
+      await removeFolder(folderId)
+      setLibraryNav((nav) =>
+        nav.kind === 'folder' && nav.folderId === folderId ? { kind: 'all' } : nav,
+      )
+    },
+    [documents, put, removeFolder, user?.id],
+  )
+
+  const handleMoveDocToFolder = useCallback(
+    async (contentId: string, folderId: string) => {
+      const doc = docLookup.get(contentId)
+      if (!doc) return
+      await put(contentId, { ...doc.data, folderId })
+    },
+    [put, docLookup],
+  )
+
   const canModify = isOwnScope
+
+  // -------------------------------------------------------------------------
+  // Document metadata and actions
+  // -------------------------------------------------------------------------
+  function DocumentDescription({
+    visibility,
+    wordCount,
+    ownerLabel,
+    dateLabel,
+  }: {
+    visibility: DocumentFields['visibility']
+    wordCount: number
+    ownerLabel: string
+    dateLabel: string
+  }) {
+    const visibilityLabel = visibility === 'public' ? 'Public' : 'Private'
+
+    return (
+      <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] font-medium leading-4 tracking-tight text-el-muted">
+        <span className="inline-flex shrink-0 items-center gap-1">
+          {visibility === 'public' ? (
+            <Globe className="h-3 w-3 text-emerald-500" />
+          ) : (
+            <Lock className="h-3 w-3" />
+          )}
+          {visibilityLabel}
+        </span>
+        <span className="shrink-0 text-el-muted/70">&middot;</span>
+        <span className="min-w-0 truncate">{ownerLabel}</span>
+        <span className="shrink-0 text-el-muted/70">&middot;</span>
+        <span className="shrink-0 whitespace-nowrap">{dateLabel}</span>
+        <span className="shrink-0 text-el-muted/70">&middot;</span>
+        <span className="tabular-nums">{wordCount} words</span>
+      </div>
+    )
+  }
+
+  function SharedDocumentDescription({
+    ownerName,
+    wordCount,
+    dateLabel,
+    sourceApp,
+  }: {
+    ownerName: string
+    wordCount: number
+    dateLabel: string
+    sourceApp?: string
+  }) {
+    return (
+      <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] font-medium leading-4 tracking-tight text-el-muted">
+        <span className="inline-flex min-w-0 items-center gap-1 text-blue-500">
+          <Share2 className="h-3 w-3 shrink-0" />
+          <span className="truncate">{ownerName}</span>
+        </span>
+        <span className="shrink-0 text-el-muted/70">&middot;</span>
+        <span className="shrink-0 whitespace-nowrap">{dateLabel}</span>
+        <span className="shrink-0 text-el-muted/70">&middot;</span>
+        <span className="tabular-nums">{wordCount} words</span>
+        {sourceApp && (
+          <>
+            <span className="shrink-0 text-el-muted/70">&middot;</span>
+            <span className="capitalize">{sourceApp}</span>
+          </>
+        )}
+      </div>
+    )
+  }
+
+  function DocumentActionsMenu({
+    share,
+    visibility,
+    isFav,
+  }: {
+    share: Share
+    visibility: DocumentFields['visibility']
+    isFav: boolean
+  }) {
+    const contentId = share.data.ContentId
+    const doc = docLookup.get(contentId)
+    const currentF = doc?.data.folderId ?? ''
+
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            onClick={(e) => e.stopPropagation()}
+            data-testid={`doc-actions-btn-${contentId}`}
+            className="rounded-lg p-1.5 text-el-muted transition-colors hover:bg-el-bg hover:text-el-text data-[state=open]:bg-el-bg data-[state=open]:text-el-text"
+            title="Document actions"
+            aria-label={`Actions for ${share.data.Title}`}
+          >
+            <MoreVertical className="h-4 w-4" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          className="min-w-[190px] border-el-line bg-el-surface text-el-text"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <DropdownMenuLabel className="px-2 py-1.5 text-[11px] text-el-muted">
+            Document actions
+          </DropdownMenuLabel>
+          <DropdownMenuItem
+            className="cursor-pointer"
+            onSelect={() => toggleFavoriteById(contentId)}
+            data-testid={`fav-btn-${contentId}`}
+          >
+            <Star className={`h-4 w-4 ${isFav ? 'fill-yellow-500 text-yellow-500' : ''}`} />
+            {isFav ? 'Remove favorite' : 'Add favorite'}
+          </DropdownMenuItem>
+          {canModify && (
+            <>
+              <DropdownMenuItem
+                className="cursor-pointer"
+                onSelect={() => void toggleShareVisibility(share)}
+                data-testid={`visibility-btn-${contentId}`}
+              >
+                {visibility === 'public' ? (
+                  <Globe className="h-4 w-4 text-emerald-500" />
+                ) : (
+                  <Lock className="h-4 w-4" />
+                )}
+                {visibility === 'public' ? 'Make private' : 'Make public'}
+              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger className="cursor-pointer">
+                  <Folder className="h-4 w-4" />
+                  Move to folder
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="min-w-[180px] border-el-line bg-el-surface text-el-text">
+                  <DropdownMenuItem
+                    className="cursor-pointer"
+                    disabled={currentF === ''}
+                    onSelect={() => void handleMoveDocToFolder(contentId, '')}
+                  >
+                    Uncategorized
+                  </DropdownMenuItem>
+                  {sortedFolders.map((f) => (
+                    <DropdownMenuItem
+                      key={f.recordId}
+                      className="cursor-pointer"
+                      disabled={currentF === f.recordId}
+                      onSelect={() => void handleMoveDocToFolder(contentId, f.recordId)}
+                    >
+                      {f.data.name}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuItem
+                className="cursor-pointer"
+                onSelect={() => copyShareLink(share)}
+                data-testid={`copy-link-btn-${contentId}`}
+              >
+                {copiedId === contentId ? (
+                  <Check className="h-4 w-4 text-emerald-500" />
+                ) : (
+                  <Link2 className="h-4 w-4" />
+                )}
+                {copiedId === contentId ? 'Copied link' : 'Copy share link'}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="cursor-pointer"
+                onSelect={() => startRename(share)}
+                data-testid={`rename-doc-btn-${contentId}`}
+              >
+                <Pencil className="h-4 w-4" />
+                Rename
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="cursor-pointer text-red-600 focus:text-red-600"
+                onSelect={() => void deleteDocument(contentId)}
+                data-testid={`delete-doc-btn-${contentId}`}
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </DropdownMenuItem>
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    )
+  }
 
   // -------------------------------------------------------------------------
   // Doc card (grid)
@@ -290,133 +685,61 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     const visibility = doc?.data.visibility ?? 'private'
     const contentId = share.data.ContentId
     const isFav = favorites.has(contentId)
+    const ownerLabel =
+      isOwnScope ? (user?.name ?? 'Me') : (share.data.OwnerName ?? 'User')
+    const dateLabel = share.data.LastEditedAt
+      ? new Date(share.data.LastEditedAt).toLocaleDateString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        })
+      : '—'
 
     return (
-      <div
-        key={contentId}
+      <motion.div
         data-testid={`doc-card-${contentId}`}
         onClick={() => navigate(docPath(contentId))}
-        className="bg-card border border-border rounded-xl p-5 cursor-pointer hover:border-primary/40 hover:shadow-card transition-all group"
+        whileHover={{ y: -2 }}
+        className="animate-etheris-fade-in group cursor-pointer rounded-xl border border-el-line bg-el-surface p-4 shadow-sm transition-all hover:border-el-accent/35 hover:shadow-md"
       >
-        <div className="flex items-start justify-between mb-3">
-          {renamingId === contentId ? (
-            <input
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
-              onBlur={() => handleRename(contentId)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleRename(contentId)
-                if (e.key === 'Escape') setRenamingId(null)
-              }}
-              onClick={(e) => e.stopPropagation()}
-              className="bg-background border border-input rounded px-2 py-1 text-sm text-foreground outline-none focus:border-primary flex-1 mr-2"
-              autoFocus
-              data-testid={`rename-input-${contentId}`}
+        <DocumentPreview docId={contentId} variant="grid" />
+
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            {renamingId === contentId ? (
+              <input
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onBlur={() => handleRename(contentId)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleRename(contentId)
+                  if (e.key === 'Escape') setRenamingId(null)
+                }}
+                onClick={(e) => e.stopPropagation()}
+                className="mb-0.5 w-full rounded-md border border-el-line bg-el-bg px-2 py-1 text-[13px] font-semibold text-el-text outline-none focus-visible:ring-2 focus-visible:ring-el-accent/30"
+                autoFocus
+                data-testid={`rename-input-${contentId}`}
+              />
+            ) : (
+            <h3 className="truncate text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
+                {share.data.Title}
+              </h3>
+            )}
+            <DocumentDescription
+              visibility={visibility}
+              wordCount={share.data.WordCount ?? 0}
+              ownerLabel={ownerLabel}
+              dateLabel={dateLabel}
             />
-          ) : (
-            <h3 className="font-semibold text-foreground truncate flex-1 mr-2">
-              {share.data.Title}
-            </h3>
-          )}
+          </div>
 
           {isOwnScope && renamingId !== contentId && (
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={(e) => toggleFavorite(e, contentId)}
-                data-testid={`fav-btn-${contentId}`}
-                className={`p-1 rounded-md transition-colors ${
-                  isFav
-                    ? 'text-yellow-500'
-                    : 'text-muted-foreground/0 group-hover:text-muted-foreground hover:text-yellow-500'
-                }`}
-                title={isFav ? 'Remove from favorites' : 'Add to favorites'}
-              >
-                <Star className={`w-3.5 h-3.5 ${isFav ? 'fill-yellow-500' : ''}`} />
-              </button>
-
-              {canModify && (
-                <>
-                  <button
-                    type="button"
-                    onClick={(e) => handleToggleVisibility(e, share)}
-                    data-testid={`visibility-btn-${contentId}`}
-                    className={`p-1.5 rounded-md transition-colors ${
-                      visibility === 'public'
-                        ? 'bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20'
-                        : 'bg-muted text-muted-foreground hover:text-foreground'
-                    }`}
-                    title={visibility === 'public' ? 'Make private' : 'Make public'}
-                  >
-                    {visibility === 'public' ? (
-                      <Globe className="w-3.5 h-3.5" />
-                    ) : (
-                      <Lock className="w-3.5 h-3.5" />
-                    )}
-                  </button>
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      type="button"
-                      onClick={(e) => handleCopyLink(e, share)}
-                      data-testid={`copy-link-btn-${contentId}`}
-                      className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-                      title={copiedId === contentId ? 'Copied!' : 'Copy share link'}
-                    >
-                      {copiedId === contentId ? (
-                        <Check className="w-3.5 h-3.5 text-emerald-500" />
-                      ) : (
-                        <Link2 className="w-3.5 h-3.5" />
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => handleStartRename(e, share)}
-                      data-testid={`rename-doc-btn-${contentId}`}
-                      className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-                      title="Rename"
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => handleDelete(e, contentId)}
-                      data-testid={`delete-doc-btn-${contentId}`}
-                      className="p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors"
-                      title="Delete"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </>
-              )}
+            <div className="shrink-0">
+              <DocumentActionsMenu share={share} visibility={visibility} isFav={isFav} />
             </div>
           )}
         </div>
-
-        <div className="flex items-center gap-3 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-1">
-            {visibility === 'public' ? (
-              <Globe className="w-3 h-3 text-emerald-500" />
-            ) : (
-              <Lock className="w-3 h-3" />
-            )}
-            {visibility === 'public' ? 'Public' : 'Private'}
-          </span>
-          <span>·</span>
-          <span>{share.data.WordCount ?? 0} words</span>
-          <span>·</span>
-          <span>
-            {share.data.LastEditedAt
-              ? new Date(share.data.LastEditedAt).toLocaleDateString(undefined, {
-                  month: 'short',
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })
-              : 'Never edited'}
-          </span>
-        </div>
-      </div>
+      </motion.div>
     )
   }
 
@@ -428,97 +751,170 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     const visibility = doc?.data.visibility ?? 'private'
     const contentId = share.data.ContentId
     const isFav = favorites.has(contentId)
+    const ownerLabel =
+      isOwnScope ? (user?.name ?? 'Me') : (share.data.OwnerName ?? 'User')
+    const dateLabel = share.data.LastEditedAt
+      ? new Date(share.data.LastEditedAt).toLocaleDateString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        })
+      : '—'
 
     return (
-      <div
+      <motion.div
         data-testid={`doc-card-${contentId}`}
         onClick={() => navigate(docPath(contentId))}
-        className="flex items-center gap-4 px-4 py-3 bg-card border border-border rounded-lg cursor-pointer hover:border-primary/40 hover:shadow-card transition-all group"
+        initial={{ opacity: 0, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="group flex cursor-pointer items-center justify-between gap-4 border-b border-el-line bg-el-surface px-4 py-3 transition-colors last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
       >
-        <button
-          type="button"
-          onClick={(e) => toggleFavorite(e, contentId)}
-          className={`p-0.5 transition-colors ${
-            isFav ? 'text-yellow-500' : 'text-transparent group-hover:text-muted-foreground'
+        <div className="flex min-w-0 flex-1 items-center gap-4">
+          <DocumentPreview docId={contentId} variant="list" />
+
+          <div className="min-w-0 flex-1">
+            <h4 className="line-clamp-2 text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
+              {share.data.Title}
+            </h4>
+            <div className="md:hidden">
+              <DocumentDescription
+                visibility={visibility}
+                wordCount={share.data.WordCount ?? 0}
+                ownerLabel={ownerLabel}
+                dateLabel={dateLabel}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="hidden min-w-0 items-center gap-6 text-[12px] text-el-muted md:flex">
+          <div className="inline-flex w-24 items-center gap-1">
+            {visibility === 'public' ? (
+              <Globe className="h-3 w-3 shrink-0 text-emerald-500" />
+            ) : (
+              <Lock className="h-3 w-3 shrink-0" />
+            )}
+            <span className="truncate">{visibility === 'public' ? 'Public' : 'Private'}</span>
+          </div>
+          <div className="w-24 text-right tabular-nums">{share.data.WordCount ?? 0} words</div>
+          <div className="w-32 truncate">{ownerLabel}</div>
+          <div className="w-28 text-right">{dateLabel}</div>
+        </div>
+
+        {isOwnScope && <DocumentActionsMenu share={share} visibility={visibility} isFav={isFav} />}
+      </motion.div>
+    )
+  }
+
+  function SharedDocTile({ share }: { share: Share }) {
+    const contentId = share.data.ContentId
+    const dateLabel = share.data.LastEditedAt
+      ? new Date(share.data.LastEditedAt).toLocaleDateString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        })
+      : '—'
+    return (
+      <motion.div
+        data-testid={`shared-doc-card-${contentId}`}
+        whileHover={{ y: -2 }}
+        onClick={() => navigate(`/browse/${share.data.OwnerId}/doc/${contentId}`)}
+        className="animate-etheris-fade-in group cursor-pointer rounded-xl border border-el-line bg-el-surface p-4 shadow-sm transition-all hover:border-el-accent/35 hover:shadow-md"
+      >
+        <DocumentPreview docId={contentId} variant="grid" />
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <h3 className="truncate text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
+              {share.data.Title}
+            </h3>
+            <SharedDocumentDescription
+              ownerName={share.data.OwnerName}
+              wordCount={share.data.WordCount ?? 0}
+              dateLabel={dateLabel}
+              sourceApp={share.data.SourceApp}
+            />
+          </div>
+          <span
+            className={`shrink-0 rounded px-2 py-0.5 text-[10px] ${
+              share.data.Permission === 'edit'
+                ? 'bg-blue-500/10 text-blue-500'
+                : 'bg-el-bg text-el-muted'
+            }`}
+          >
+            {share.data.Permission === 'edit' ? 'Can edit' : 'View only'}
+          </span>
+        </div>
+      </motion.div>
+    )
+  }
+
+  function SharedDocListRow({ share }: { share: Share }) {
+    const contentId = share.data.ContentId
+    const dateLabel = share.data.LastEditedAt
+      ? new Date(share.data.LastEditedAt).toLocaleDateString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        })
+      : '—'
+    return (
+      <motion.div
+        data-testid={`shared-doc-card-${contentId}`}
+        initial={{ opacity: 0, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        onClick={() => navigate(`/browse/${share.data.OwnerId}/doc/${contentId}`)}
+        className="group flex cursor-pointer items-center justify-between gap-4 border-b border-el-line bg-el-surface px-4 py-3 transition-colors last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-4">
+          <DocumentPreview docId={contentId} variant="list" />
+          <div className="min-w-0 flex-1">
+            <h4 className="line-clamp-2 text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
+              {share.data.Title}
+            </h4>
+            <div className="md:hidden">
+              <SharedDocumentDescription
+                ownerName={share.data.OwnerName}
+                wordCount={share.data.WordCount ?? 0}
+                dateLabel={dateLabel}
+                sourceApp={share.data.SourceApp}
+              />
+            </div>
+          </div>
+        </div>
+        <div className="hidden min-w-0 items-center gap-6 text-[12px] text-el-muted md:flex">
+          <div className="w-32 truncate">{share.data.OwnerName}</div>
+          <div className="w-24 text-right tabular-nums">{share.data.WordCount ?? 0} words</div>
+          <div className="w-28 text-right">{dateLabel}</div>
+          {share.data.SourceApp && (
+            <div className="w-20 truncate capitalize">{share.data.SourceApp}</div>
+          )}
+        </div>
+        <span
+          className={`shrink-0 rounded px-2 py-0.5 text-[10px] ${
+            share.data.Permission === 'edit'
+              ? 'bg-blue-500/10 text-blue-500'
+              : 'bg-el-bg text-el-muted'
           }`}
         >
-          <Star className={`w-3.5 h-3.5 ${isFav ? 'fill-yellow-500' : ''}`} />
-        </button>
-
-        <FileText className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-
-        <span className="font-medium text-foreground truncate flex-1">
-          {share.data.Title}
+          {share.data.Permission === 'edit' ? 'Can edit' : 'View only'}
         </span>
-
-        <span className="text-xs text-muted-foreground inline-flex items-center gap-1 w-20">
-          {visibility === 'public' ? (
-            <Globe className="w-3 h-3 text-emerald-500" />
-          ) : (
-            <Lock className="w-3 h-3" />
-          )}
-          {visibility === 'public' ? 'Public' : 'Private'}
-        </span>
-
-        <span className="text-xs text-muted-foreground tabular-nums w-20 text-right">
-          {share.data.WordCount ?? 0} words
-        </span>
-
-        <span className="text-xs text-muted-foreground w-32 text-right">
-          {share.data.LastEditedAt
-            ? new Date(share.data.LastEditedAt).toLocaleDateString(undefined, {
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-              })
-            : '—'}
-        </span>
-
-        {canModify && (
-          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-            <button
-              type="button"
-              onClick={(e) => handleCopyLink(e, share)}
-              className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-              title={copiedId === contentId ? 'Copied!' : 'Copy share link'}
-            >
-              {copiedId === contentId ? (
-                <Check className="w-3.5 h-3.5 text-emerald-500" />
-              ) : (
-                <Link2 className="w-3.5 h-3.5" />
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={(e) => handleStartRename(e, share)}
-              className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-              title="Rename"
-            >
-              <Pencil className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={(e) => handleDelete(e, contentId)}
-              className="p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors"
-              title="Delete"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
-      </div>
+      </motion.div>
     )
   }
 
   // -------------------------------------------------------------------------
   // Section renderer
   // -------------------------------------------------------------------------
-  function DocSection({ title, icon, shares, testId }: {
+  function DocSection({ title, icon, shares, testId, showLeadingBlank, showTitle = true }: {
     title: string
     icon?: React.ReactNode
     shares: Share[]
     testId: string
+    /** Etheris-style dashed “blank doc” tile (grid only). */
+    showLeadingBlank?: boolean
+    /** When false, the h2 is omitted (toolbar already shows the same label). */
+    showTitle?: boolean
   }) {
     const filtered = filterBySearch(shares)
     const sorted = sortShares(filtered, sortBy)
@@ -526,24 +922,48 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     if (sorted.length === 0 && searchQuery) return null
     if (sorted.length === 0 && title !== 'My Documents') return null
 
+    const blankTile =
+      showLeadingBlank && canModify && viewMode === 'grid' ? (
+        <motion.button
+          key="blank-doc-tile"
+          type="button"
+          whileHover={{ scale: 0.98 }}
+          onClick={() => handleCreate()}
+          data-testid="blank-doc-tile"
+          className="flex aspect-[3/4] cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-el-line bg-el-surface/20 text-el-muted transition-all hover:border-el-accent hover:text-el-accent"
+        >
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-el-surface shadow-sm ring-1 ring-el-line">
+            <Plus className="h-5 w-5" strokeWidth={2.5} />
+          </div>
+          <span className="text-[10px] font-bold uppercase tracking-[0.15em]">Blank Doc</span>
+        </motion.button>
+      ) : null
+
     return (
-      <section className="mb-10">
+      <section
+        className="mb-12"
+        data-testid={!showTitle ? (testId === 'my-docs-heading' ? undefined : testId) : undefined}
+      >
+        {showTitle && (
         <h2
-          className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4 flex items-center gap-2"
+          className="mb-6 flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-el-muted"
           data-testid={testId}
         >
           {icon}
           {title}
           {sorted.length > 0 && (
-            <span className="text-xs font-normal">({sorted.length})</span>
+            <span className="text-[10px] font-semibold normal-case tracking-normal text-el-muted/80">
+              ({sorted.length})
+            </span>
           )}
         </h2>
+        )}
         {sorted.length === 0 ? (
           <div
             data-testid="empty-state"
-            className="flex flex-col items-center justify-center py-12 text-muted-foreground"
+            className="flex flex-col items-center justify-center py-12 text-el-muted"
           >
-            <FileText className="w-10 h-10 mb-3 opacity-40" />
+            <FileText className="mb-3 h-10 w-10 opacity-40" />
             <p className="text-sm">
               {canModify
                 ? 'Create your first document to get started.'
@@ -551,11 +971,22 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
             </p>
           </div>
         ) : viewMode === 'grid' ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
+            {blankTile}
             {sorted.map((share) => <DocCard key={share.data.ContentId} share={share} />)}
           </div>
         ) : (
-          <div className="flex flex-col gap-2">
+          <div className="overflow-hidden rounded-xl border border-el-line bg-el-surface shadow-sm">
+            <div className="flex items-center justify-between border-b border-el-line bg-black/[0.02] px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-el-muted dark:bg-white/[0.03]">
+              <div className="flex-1">Name</div>
+              <div className="hidden gap-10 md:flex">
+                <div className="w-28">Visibility</div>
+                <div className="w-24 text-right">Words</div>
+                <div className="w-32">Owner</div>
+                <div className="w-36 text-right">Last modified</div>
+                <div className="w-6" />
+              </div>
+            </div>
             {sorted.map((share) => <DocRow key={share.data.ContentId} share={share} />)}
           </div>
         )}
@@ -563,77 +994,229 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     )
   }
 
-  function ControlsBar() {
+  function ProfileMenu() {
+    if (!isSignedIn) {
+      return (
+        <>
+          <button
+            type="button"
+            data-testid="nav-sign-in-button"
+            onClick={() => setShowAuthModal(true)}
+            className="shrink-0 rounded-full bg-el-accent px-4 py-2 text-xs font-bold text-white shadow-sm transition-opacity hover:opacity-90"
+          >
+            Sign In
+          </button>
+          {showAuthModal && <AuthOverlay onClose={() => setShowAuthModal(false)} />}
+        </>
+      )
+    }
+    if (!user) return null
     return (
-      <div className="flex items-center gap-3 mb-6">
-        <div className="flex-1 max-w-sm">
+      <div className="relative shrink-0">
+        <UserProfileButton
+          type="button"
+          data-testid="library-profile-btn"
+          name={user.name || user.email || 'User'}
+          email={user.email}
+          imageUrl={user.imageUrl}
+          title="Account"
+          avatarSizeClassName="h-8 w-8"
+          onClick={() => setProfileMenuOpen((o) => !o)}
+          className="h-auto max-w-[min(16rem,45vw)] border-el-line bg-el-surface py-1.5 pl-1.5 pr-2.5 text-el-text shadow-sm hover:bg-el-bg [&_span]:text-el-text"
+        />
+        {profileMenuOpen && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setProfileMenuOpen(false)} />
+            <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded-lg border border-el-line bg-el-surface py-1 shadow-lg">
+              <div className="border-b border-el-line px-3 py-2">
+                <div className="truncate text-sm font-medium text-el-text">{user.name}</div>
+                <div className="truncate text-xs text-el-muted">{user.email}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setProfileMenuOpen(false)
+                  signOut()
+                }}
+                className="w-full px-3 py-2 text-left text-sm text-el-muted transition-colors hover:bg-el-bg hover:text-el-text"
+              >
+                Sign out
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    )
+  }
+
+  function SearchToolbarRow({ includeDocActions }: { includeDocActions: boolean }) {
+    return (
+      <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:gap-3 sm:justify-between">
+        <div className="relative min-w-0 max-w-md flex-1">
           <SearchInput
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onClear={() => setSearchQuery('')}
-            placeholder="Search documents..."
+            placeholder="Search your library..."
             data-testid="doc-search"
+            className="h-auto w-full rounded-lg border-el-line bg-el-surface py-2 pl-10 pr-4 text-[13px] text-el-text shadow-sm placeholder:text-el-muted/60 focus-visible:ring-2 focus-visible:ring-el-accent/20"
           />
         </div>
-
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setShowSortDropdown(!showSortDropdown)}
-            data-testid="sort-dropdown"
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-          >
-            <SortAsc className="w-3.5 h-3.5" />
-            {SORT_OPTIONS.find((o) => o.value === sortBy)?.label}
-          </button>
-          {showSortDropdown && (
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-3 sm:ml-auto">
+          {includeDocActions && canModify && (
             <>
-              <div className="fixed inset-0 z-40" onClick={() => setShowSortDropdown(false)} />
-              <div className="absolute top-full right-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg py-1 min-w-[160px]">
-                {SORT_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    data-testid={`sort-${opt.value}`}
-                    onClick={() => {
-                      setSortBy(opt.value)
-                      setShowSortDropdown(false)
-                    }}
-                    className={`w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors ${
-                      sortBy === opt.value ? 'text-primary font-medium' : 'text-popover-foreground'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
+              <button
+                type="button"
+                onClick={() => setShowTemplates(true)}
+                data-testid="templates-btn"
+                className="flex h-9 items-center gap-2 rounded-lg border border-el-line bg-el-surface px-4 text-[12px] font-semibold text-el-text shadow-sm transition-colors hover:bg-el-bg"
+              >
+                <FileDown className="h-4 w-4" />
+                Templates
+              </button>
+              <button
+                type="button"
+                onClick={() => handleCreate()}
+                data-testid="create-doc-btn"
+                className="flex h-9 items-center gap-2 rounded-lg bg-el-accent px-4 text-[12px] font-bold text-white shadow-sm transition-opacity hover:opacity-90"
+              >
+                <Plus className="h-4 w-4" strokeWidth={2.5} />
+                New Document
+              </button>
             </>
           )}
         </div>
+      </div>
+    )
+  }
 
-        <div className="flex items-center border border-border rounded-lg overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setViewMode('grid')}
-            data-testid="view-grid"
-            className={`p-2 transition-colors ${
-              viewMode === 'grid' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-            }`}
-            title="Grid view"
-          >
-            <LayoutGrid className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewMode('list')}
-            data-testid="view-list"
-            className={`p-2 transition-colors ${
-              viewMode === 'list' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-            }`}
-            title="List view"
-          >
-            <LayoutList className="w-4 h-4" />
-          </button>
+  function FolderShortcutRow() {
+    if (!canModify) return null
+
+    const createFromShortcut = async () => {
+      const name = window.prompt('Folder name')
+      const trimmed = name?.trim()
+      if (!trimmed) return
+      await handleCreateFolder(trimmed)
+    }
+
+    return (
+      <div className="mb-12 grid grid-cols-1 gap-3 md:grid-cols-4">
+        {sortedFolders.map((folder) => {
+          const selected = libraryNav.kind === 'folder' && libraryNav.folderId === folder.recordId
+          return (
+            <button
+              key={folder.recordId}
+              type="button"
+              data-testid={`folder-shortcut-${folder.recordId}`}
+              onClick={() => setLibraryNav({ kind: 'folder', folderId: folder.recordId })}
+              className={`group flex items-center gap-3 rounded-xl border bg-el-surface p-3.5 text-left shadow-sm transition-all ${
+                selected
+                  ? 'border-el-accent/50 ring-2 ring-el-accent/10'
+                  : 'border-el-line hover:border-el-accent/35'
+              }`}
+            >
+              <div className="rounded-lg bg-el-bg p-2 text-el-muted transition-all group-hover:bg-el-accent/5 group-hover:text-el-accent">
+                <Folder className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-semibold text-el-text">
+                  {folder.data.name}
+                </span>
+              </div>
+              <ChevronRight className="h-3 w-3 shrink-0 text-el-muted/50 transition-colors group-hover:text-el-accent" />
+            </button>
+          )
+        })}
+
+        <button
+          type="button"
+          data-testid="folder-shortcut-new"
+          onClick={() => void createFromShortcut()}
+          className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-el-line bg-el-surface/20 p-3.5 text-[13px] font-semibold text-el-muted transition-all hover:border-el-accent hover:text-el-accent"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          New Folder
+        </button>
+      </div>
+    )
+  }
+
+  function LibraryControlsRow() {
+    // Only "My Documents" is duplicated: toolbar label + list section share this id.
+    const toolbarTestId = listControlsHeading === 'My Documents' ? 'my-docs-heading' : undefined
+    return (
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <h2
+          className="text-[11px] font-bold uppercase tracking-widest text-el-muted"
+          data-testid={toolbarTestId}
+        >
+          {listControlsHeading}
+        </h2>
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowSortDropdown(!showSortDropdown)}
+              data-testid="sort-dropdown"
+              className="flex items-center gap-1.5 rounded-lg border border-el-line bg-el-surface px-3 py-2 text-xs font-medium text-el-muted shadow-sm transition-colors hover:text-el-text"
+            >
+              <SortAsc className="h-3.5 w-3.5" />
+              {SORT_OPTIONS.find((o) => o.value === sortBy)?.label}
+            </button>
+            {showSortDropdown && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowSortDropdown(false)} />
+                <div className="absolute right-0 top-full z-50 mt-1 min-w-[168px] rounded-lg border border-el-line bg-el-surface py-1 shadow-lg">
+                  {SORT_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      data-testid={`sort-${opt.value}`}
+                      onClick={() => {
+                        setSortBy(opt.value)
+                        setShowSortDropdown(false)
+                      }}
+                      className={`w-full px-3 py-1.5 text-left text-sm transition-colors hover:bg-el-bg ${
+                        sortBy === opt.value ? 'font-medium text-el-accent' : 'text-el-text'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="flex items-center rounded-lg border border-black/5 bg-black/5 p-0.5 dark:border-white/10 dark:bg-white/5">
+            <button
+              type="button"
+              onClick={() => setViewMode('grid')}
+              data-testid="view-grid"
+              className={`rounded-md p-1.5 transition-all ${
+                viewMode === 'grid'
+                  ? 'bg-el-surface text-el-text shadow-sm'
+                  : 'text-el-muted hover:text-el-text'
+              }`}
+              title="Grid view"
+            >
+              <LayoutGrid className="h-[13px] w-[13px]" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('list')}
+              data-testid="view-list"
+              className={`rounded-md p-1.5 transition-all ${
+                viewMode === 'list'
+                  ? 'bg-el-surface text-el-text shadow-sm'
+                  : 'text-el-muted hover:text-el-text'
+              }`}
+              title="List view"
+            >
+              <LayoutList className="h-[13px] w-[13px]" />
+            </button>
+          </div>
         </div>
       </div>
     )
@@ -676,41 +1259,71 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     const filtered = filterBySearch(browseDocs)
     const sorted = sortShares(filtered, sortBy)
     return (
-      <div data-testid="app-root" className="h-full bg-background overflow-y-auto">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <div className="flex items-center justify-between mb-8">
-            <div className="flex items-center gap-3">
+      <div
+        data-testid="app-root"
+        className="min-h-full overflow-y-auto bg-el-bg selection:bg-el-accent/20"
+      >
+        <div className="px-6 py-10 md:px-12 md:py-12 lg:px-16 lg:py-16">
+          <header className="mb-10 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex min-w-0 items-center gap-3">
               <button
                 type="button"
                 onClick={() => navigate('/')}
                 data-testid="back-to-own-btn"
-                className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                className="rounded-lg p-1.5 text-el-muted transition-colors hover:bg-el-surface hover:text-el-text"
                 title="Back to your documents"
               >
-                <ArrowLeft className="w-4 h-4" />
+                <ArrowLeft className="h-4 w-4" />
               </button>
-              <h1 className="text-2xl font-bold text-foreground">Public Documents</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-el-text md:text-3xl">
+                Public Documents
+              </h1>
             </div>
+            <ProfileMenu />
+          </header>
+
+          <div>
+            <SearchToolbarRow includeDocActions={false} />
           </div>
 
-          <ControlsBar />
+          <LibraryControlsRow />
 
           {sorted.length === 0 ? (
             <div
               data-testid="empty-state"
-              className="flex flex-col items-center justify-center py-20 text-muted-foreground"
+              className="flex flex-col items-center justify-center py-20 text-el-muted"
             >
-              <FileText className="w-12 h-12 mb-4 opacity-40" />
-              <p className="text-lg mb-1">No documents yet</p>
+              <FileText className="mb-4 h-12 w-12 opacity-40" />
+              <p className="mb-1 text-lg text-el-text">No documents yet</p>
               <p className="text-sm">This user has no public documents.</p>
             </div>
           ) : viewMode === 'grid' ? (
-            <div data-testid="doc-list" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {sorted.map((share) => <DocCard key={share.data.ContentId} share={share} />)}
+            <div
+              data-testid="doc-list"
+              className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5"
+            >
+              {sorted.map((share) => (
+                <DocCard key={share.data.ContentId} share={share} />
+              ))}
             </div>
           ) : (
-            <div data-testid="doc-list" className="flex flex-col gap-2">
-              {sorted.map((share) => <DocRow key={share.data.ContentId} share={share} />)}
+            <div
+              data-testid="doc-list"
+              className="overflow-hidden rounded-xl border border-el-line bg-el-surface shadow-sm"
+            >
+              <div className="flex items-center justify-between border-b border-el-line bg-black/[0.02] px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-el-muted dark:bg-white/[0.03]">
+                <div className="flex-1">Name</div>
+                <div className="hidden gap-10 md:flex">
+                  <div className="w-28">Visibility</div>
+                  <div className="w-24 text-right">Words</div>
+                  <div className="w-32">Owner</div>
+                  <div className="w-36 text-right">Last modified</div>
+                  <div className="w-6" />
+                </div>
+              </div>
+              {sorted.map((share) => (
+                <DocRow key={share.data.ContentId} share={share} />
+              ))}
             </div>
           )}
         </div>
@@ -725,131 +1338,130 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     .filter((s) => s.data.ContentType === 'document' && s.data.OwnerId !== user?.id)
     .sort((a, b) => (b.data.SharedAt ?? '').localeCompare(a.data.SharedAt ?? ''))
 
+  const leadingBlankForNav =
+    canModify && libraryNav.kind !== 'favorites'
+
   return (
-    <div data-testid="app-root" className="h-full bg-background overflow-y-auto">
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold text-foreground">Documents</h1>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={toggleTheme}
-              data-testid="theme-toggle"
-              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-              className="p-2 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-            >
-              {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-            </button>
-            {canModify && (
+    <div
+      data-testid="app-root"
+      className="flex min-h-full overflow-hidden bg-el-bg selection:bg-el-accent/20"
+    >
+      {user ? (
+        <LibrarySidebar
+          selection={libraryNav}
+          onSelect={setLibraryNav}
+          folders={myFolders}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={toggleSidebarCollapsed}
+          onCreateFolder={handleCreateFolder}
+          onDeleteFolder={handleDeleteFolder}
+        />
+      ) : null}
+
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+        <div className="px-6 pb-10 pt-9 md:px-12 md:pb-12 md:pt-10 lg:px-16 lg:pb-16 lg:pt-10">
+          <div className="mb-1 flex min-w-0 items-center justify-between gap-4">
+            <h1 className="min-w-0 text-3xl font-bold leading-tight tracking-tight text-el-text sm:text-4xl">
+              {greetingForTime()}, {displayFirstName}
+            </h1>
+            <div className="shrink-0">
+              <ProfileMenu />
+            </div>
+          </div>
+          <p className="mb-4 text-[13px] font-medium text-el-muted">
+            {myShares.length} {myShares.length === 1 ? 'document' : 'documents'} in your workspace.
+          </p>
+          <div className="mb-8 w-full min-w-0">
+            <SearchToolbarRow includeDocActions />
+          </div>
+          <div className="mb-10">
+            <FolderShortcutRow />
+          </div>
+
+          <LibraryControlsRow />
+
+          <div data-testid="doc-list">
+            {libraryNav.kind === 'favorites' ? (
+              <DocSection
+                title="Favorites"
+                icon={<Star className="h-4 w-4 fill-yellow-500 text-yellow-500" />}
+                shares={filteredFavoriteDocs}
+                testId="favorites-heading"
+                showTitle={false}
+              />
+            ) : (
               <>
-                <button
-                  type="button"
-                  onClick={() => setShowTemplates(true)}
-                  data-testid="templates-btn"
-                  className="flex items-center gap-2 px-4 py-2 border border-border text-foreground rounded-lg hover:bg-muted transition-colors text-sm font-medium"
-                >
-                  <FileDown className="w-4 h-4" />
-                  Templates
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleCreate()}
-                  data-testid="create-doc-btn"
-                  className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary-hover transition-colors text-sm font-medium"
-                >
-                  <Plus className="w-4 h-4" />
-                  New Document
-                </button>
+                {filteredFavoriteDocs.length > 0 && (
+                  <DocSection
+                    title="Favorites"
+                    icon={<Star className="h-4 w-4 fill-yellow-500 text-yellow-500" />}
+                    shares={filteredFavoriteDocs}
+                    testId="favorites-heading"
+                  />
+                )}
+
+                <DocSection
+                  title="My Documents"
+                  shares={filteredPrivateDocs}
+                  testId="my-docs-heading"
+                  showLeadingBlank={leadingBlankForNav}
+                  showTitle={libraryNav.kind === 'uncategorized' || libraryNav.kind === 'folder'}
+                />
+
+                <DocSection
+                  title="Published"
+                  icon={<Globe className="h-4 w-4 text-emerald-500" />}
+                  shares={filteredPublicDocs}
+                  testId="published-docs-heading"
+                />
               </>
             )}
           </div>
-        </div>
 
-        <ControlsBar />
-
-        <div data-testid="doc-list">
-          {favoriteDocs.length > 0 && (
-            <DocSection
-              title="Favorites"
-              icon={<Star className="w-4 h-4 text-yellow-500 fill-yellow-500" />}
-              shares={favoriteDocs}
-              testId="favorites-heading"
-            />
-          )}
-
-          <DocSection
-            title="My Documents"
-            shares={privateDocs}
-            testId="my-docs-heading"
-          />
-
-          <DocSection
-            title="Published"
-            icon={<Globe className="w-4 h-4 text-emerald-500" />}
-            shares={publicDocs}
-            testId="published-docs-heading"
-          />
-        </div>
-
-        {sharedWithMe.length > 0 && (
-          <section>
-            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4 flex items-center gap-2" data-testid="shared-docs-heading">
-              <Share2 className="w-4 h-4 text-blue-500" />
+          {libraryNav.kind === 'all' && sharedWithMe.length > 0 && (
+          <section className="mt-4">
+            <h2
+              className="mb-6 flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-el-muted"
+              data-testid="shared-docs-heading"
+            >
+              <Share2 className="h-4 w-4 text-blue-500" />
               Shared with me
             </h2>
-            <div data-testid="shared-doc-list" className={viewMode === 'grid' ? 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4' : 'flex flex-col gap-2'}>
-              {sharedWithMe.map((share) => (
-                <div
-                  key={share.recordId}
-                  data-testid={`shared-doc-card-${share.data.ContentId}`}
-                  onClick={() => navigate(`/browse/${share.data.OwnerId}/doc/${share.data.ContentId}`)}
-                  className="bg-card border border-border rounded-xl p-5 cursor-pointer hover:border-primary/40 hover:shadow-card transition-all group"
-                >
-                  <div className="flex items-start justify-between mb-3">
-                    <h3 className="font-semibold text-foreground truncate flex-1 mr-2">
-                      {share.data.Title}
-                    </h3>
-                    <span className={`text-[10px] px-2 py-0.5 rounded ${
-                      share.data.Permission === 'edit'
-                        ? 'bg-blue-500/10 text-blue-500'
-                        : 'bg-muted text-muted-foreground'
-                    }`}>
-                      {share.data.Permission === 'edit' ? 'Can edit' : 'View only'}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                    <span className="inline-flex items-center gap-1">
-                      <Share2 className="w-3 h-3 text-blue-500" />
-                      {share.data.OwnerName}
-                    </span>
-                    <span>·</span>
-                    <span>{share.data.WordCount ?? 0} words</span>
-                    <span>·</span>
-                    <span>
-                      {share.data.LastEditedAt
-                        ? new Date(share.data.LastEditedAt).toLocaleDateString(undefined, {
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })
-                        : ''}
-                    </span>
-                    {share.data.SourceApp && (
-                      <>
-                        <span>·</span>
-                        <span className="capitalize">{share.data.SourceApp}</span>
-                      </>
-                    )}
+            {viewMode === 'grid' ? (
+              <div
+                data-testid="shared-doc-list"
+                className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5"
+              >
+                {sharedWithMe.map((share) => (
+                  <SharedDocTile key={share.recordId} share={share} />
+                ))}
+              </div>
+            ) : (
+              <div
+                data-testid="shared-doc-list"
+                className="overflow-hidden rounded-xl border border-el-line bg-el-surface shadow-sm"
+              >
+                <div className="flex items-center justify-between border-b border-el-line bg-black/[0.02] px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-el-muted dark:bg-white/[0.03]">
+                  <div className="flex-1">Name</div>
+                  <div className="hidden gap-8 md:flex">
+                    <div className="w-36">Owner</div>
+                    <div className="w-24 text-right">Words</div>
+                    <div className="w-36 text-right">Modified</div>
+                    <div className="w-20">App</div>
+                    <div className="w-24 text-right">Access</div>
                   </div>
                 </div>
-              ))}
-            </div>
+                {sharedWithMe.map((share) => (
+                  <SharedDocListRow key={share.recordId} share={share} />
+                ))}
+              </div>
+            )}
           </section>
-        )}
-      </div>
+          )}
+        </div>
 
-      <TemplatePicker />
+        <TemplatePicker />
+      </div>
     </div>
   )
 }

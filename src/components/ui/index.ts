@@ -33,6 +33,7 @@ export { Label } from './Label'
 export { Badge, badgeVariants } from './Badge'
 export type { BadgeProps } from './Badge'
 export { Avatar, AvatarImage, AvatarFallback } from './Avatar'
+export { UserProfileButton, type UserProfileButtonProps } from './UserProfileButton'
 export { Progress } from './Progress'
 export {
   Skeleton, SkeletonText, SkeletonCard, SkeletonList, SkeletonTable, SkeletonAvatar,

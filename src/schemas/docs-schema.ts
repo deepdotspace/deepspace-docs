@@ -14,6 +14,8 @@ export const docsSchema: CollectionSchema = {
     { name: 'title', storage: 'text', interpretation: 'plain', required: true },
     { name: 'ownerId', storage: 'text', interpretation: 'plain', required: true, userBound: true, immutable: true },
     { name: 'visibility', storage: 'text', interpretation: { kind: 'select', options: ['private', 'public'] } },
+    /** Empty string = not in any folder. */
+    { name: 'folderId', storage: 'text', interpretation: 'plain' },
   ],
   ownerField: 'ownerId',
   visibilityField: 'visibility',

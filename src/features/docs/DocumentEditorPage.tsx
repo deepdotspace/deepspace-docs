@@ -26,14 +26,11 @@ import {
   ArrowLeft,
   Users,
   Lock,
-  Sun,
-  Moon,
   Check,
   Link2,
   Download,
   Printer,
 } from 'lucide-react'
-import { useTheme } from '../../hooks'
 import type { DocumentFields, ContentShareFields } from './types'
 import {
   useDocEditor,
@@ -179,7 +176,6 @@ export default function DocumentEditorPage() {
   const browseMatch = location.pathname.match(/^\/browse\/([^/]+)/)
   const backPath = browseMatch ? `/browse/${browseMatch[1]}` : '/'
   const { user } = useUser()
-  const { theme, toggle: toggleTheme } = useTheme()
 
   const { records: docs } = useQuery<DocumentFields>('documents')
   const doc = docs?.find((d) => d.recordId === docId)
@@ -232,24 +228,40 @@ export default function DocumentEditorPage() {
 
   // Debounced metadata sync (wordCount + lastEditedAt) onto content_shares.
   const metaTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const metaPendingRef = useRef(false)
   const docSharesRef = useRef(docShares)
   docSharesRef.current = docShares
+  const editorRef = useRef(editor)
+  editorRef.current = editor
+  const canWriteRef = useRef(canWrite)
+  canWriteRef.current = canWrite
+  const putShareRef = useRef(putShare)
+  putShareRef.current = putShare
+  const docIdRef = useRef(docId)
+  docIdRef.current = docId
+
+  const flushShareMeta = useCallback(() => {
+    metaPendingRef.current = false
+    const ed = editorRef.current
+    const id = docIdRef.current
+    if (!ed || !canWriteRef.current || !id) return
+    const words = ed.storage.characterCount?.words({}) ?? 0
+    const now = new Date().toISOString()
+    for (const share of docSharesRef.current) {
+      putShareRef.current(share.recordId, {
+        ...share.data,
+        WordCount: words,
+        LastEditedAt: now,
+      }).catch(() => {})
+    }
+  }, [])
 
   const handleUpdate = useCallback(() => {
     if (!editor || !canWrite || !docId) return
     clearTimeout(metaTimerRef.current)
-    metaTimerRef.current = setTimeout(() => {
-      const words = editor.storage.characterCount?.words({}) ?? 0
-      const now = new Date().toISOString()
-      for (const share of docSharesRef.current) {
-        putShare(share.recordId, {
-          ...share.data,
-          WordCount: words,
-          LastEditedAt: now,
-        }).catch(() => {})
-      }
-    }, 2000)
-  }, [editor, canWrite, docId, putShare])
+    metaPendingRef.current = true
+    metaTimerRef.current = setTimeout(flushShareMeta, 2000)
+  }, [editor, canWrite, docId, flushShareMeta])
 
   useEffect(() => {
     if (!editor) return
@@ -258,8 +270,14 @@ export default function DocumentEditorPage() {
   }, [editor, handleUpdate])
 
   useEffect(() => {
-    return () => clearTimeout(metaTimerRef.current)
-  }, [])
+    return () => {
+      clearTimeout(metaTimerRef.current)
+      if (metaPendingRef.current) {
+        metaPendingRef.current = false
+        flushShareMeta()
+      }
+    }
+  }, [flushShareMeta])
 
   const handleTitleSave = useCallback(
     async (newTitle: string) => {
@@ -350,16 +368,6 @@ export default function DocumentEditorPage() {
             {linkCopied ? <Check className="w-4 h-4 text-emerald-500" /> : <Link2 className="w-4 h-4" />}
           </button>
         )}
-
-        <button
-          type="button"
-          onClick={toggleTheme}
-          data-testid="theme-toggle"
-          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-          className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-        >
-          {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-        </button>
 
         {editor && <ExportMenu editor={editor} title={docTitle} />}
       </div>

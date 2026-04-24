@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { createTestUsers } from './helpers/auth'
 
 async function waitForApp(page: import('@playwright/test').Page) {
-  await page.waitForSelector('[data-testid="app-navigation"]', { timeout: 15000 })
+  await page.waitForSelector('[data-testid="app-layout"]', { timeout: 15000 })
 }
 
 test.describe('Multi-user collaboration', () => {

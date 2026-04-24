@@ -3,7 +3,7 @@ import { createTestUsers } from './helpers/auth'
 import { captureConsoleErrors } from './helpers/errors'
 
 async function waitForApp(page: import('@playwright/test').Page) {
-  await page.waitForSelector('[data-testid="app-navigation"]', { timeout: 15000 })
+  await page.waitForSelector('[data-testid="app-layout"]', { timeout: 15000 })
 }
 
 test.describe('Documents CRUD', () => {

@@ -68,6 +68,22 @@
   line-height: 1.75;
 }
 
+/* Compact read-only previews on the document list (first page clip) */
+.tiptap.doc-preview-tiptap {
+  min-height: 0;
+  padding: 1.25rem 1.5rem 2rem;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--color-el-text, var(--color-foreground));
+  pointer-events: none;
+  user-select: none;
+}
+
+.tiptap.doc-preview-tiptap img {
+  max-width: 100%;
+  height: auto;
+}
+
 .tiptap > * + * {
   margin-top: 0.75em;
 }

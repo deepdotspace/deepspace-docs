@@ -4,10 +4,10 @@ import { captureConsoleErrors } from './helpers/errors'
 /**
  * Wait for the React app to mount. The app shows either:
  * - "Loading..." while auth initializes
- * - The navigation bar once ready
+ * - The app shell once ready
  */
 async function waitForApp(page: import('@playwright/test').Page) {
-  await page.waitForSelector('[data-testid="app-navigation"]', { timeout: 15000 })
+  await page.waitForSelector('[data-testid="app-layout"]', { timeout: 15000 })
 }
 
 test.describe('Smoke tests', () => {
@@ -18,10 +18,10 @@ test.describe('Smoke tests', () => {
     expect(errors).toEqual([])
   })
 
-  test('navigation is visible', async ({ page }) => {
+  test('app shell is visible', async ({ page }) => {
     await page.goto('/')
     await waitForApp(page)
-    await expect(page.getByTestId('app-navigation')).toBeVisible()
+    await expect(page.getByTestId('app-layout')).toBeVisible()
   })
 
   test('sign-in button visible when logged out', async ({ page }) => {

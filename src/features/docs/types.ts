@@ -2,7 +2,21 @@ export interface DocumentFields {
   title: string
   ownerId: string
   visibility: 'private' | 'public'
+  /** Owning folder record id, or empty / omitted when uncategorized. */
+  folderId?: string
 }
+
+export interface DocFolderFields {
+  name: string
+  ownerId: string
+}
+
+/** Sidebar scope for filtering the library. */
+export type LibraryNavSelection =
+  | { kind: 'all' }
+  | { kind: 'favorites' }
+  | { kind: 'uncategorized' }
+  | { kind: 'folder'; folderId: string }
 
 export interface ContentShareFields {
   ContentType: string
