@@ -1,17 +1,16 @@
 /**
  * Document Editor Page
  *
- * Collaborative markdown/plain-text editor backed by a dedicated YjsRoom
- * Durable Object. We intentionally use a simple `<textarea>` (with
- * `useYjsText`) instead of the Miyagi3 Tiptap editor — `@spaces/editor`
- * does not exist in the DeepSpace SDK, so richer features (toolbar,
- * comments, find/replace, exports) were dropped from the Miyagi3 port.
+ * Google-Docs style collaborative rich-text editor backed by a dedicated
+ * YjsRoom Durable Object. Uses Tiptap + Yjs for real-time collaboration
+ * with a full toolbar (undo/redo, formatting, headings, lists, tables,
+ * links, images, find/replace, export, etc.).
  *
  * Document layout:
  *   - `documents` record (app RecordRoom): title, ownerId, visibility
  *   - `content_shares` record (workspace RecordRoom): cross-app metadata
  *     (title, wordCount, lastEditedAt)
- *   - YjsRoom DO keyed by docId: the actual text content
+ *   - YjsRoom DO keyed by docId: the actual rich-text content (Yjs XML fragment)
  */
 
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react'
@@ -22,7 +21,6 @@ import {
   useUser,
   useYjsRoom,
   getUserColor,
-  type RecordData,
 } from 'deepspace'
 import {
   ArrowLeft,
@@ -32,11 +30,20 @@ import {
   Moon,
   Check,
   Link2,
+  Download,
+  Printer,
 } from 'lucide-react'
 import { useTheme } from '../../hooks'
 import type { DocumentFields, ContentShareFields } from './types'
-
-type Share = RecordData<ContentShareFields>
+import {
+  useDocEditor,
+  EditorToolbar,
+  EditorContent,
+  FindReplaceBar,
+  exportAndDownload,
+  type ExportFormat,
+} from './editor'
+import type { Editor } from '@tiptap/react'
 
 function InlineTitle({
   title,
@@ -97,6 +104,73 @@ function InlineTitle({
   )
 }
 
+// ---------------------------------------------------------------------------
+// Export Dropdown
+// ---------------------------------------------------------------------------
+
+function ExportMenu({ editor, title }: { editor: Editor; title: string }) {
+  const [open, setOpen] = useState(false)
+
+  const formats: { label: string; format: ExportFormat; icon: string }[] = [
+    { label: 'Markdown (.md)', format: 'markdown', icon: 'M↓' },
+    { label: 'HTML (.html)', format: 'html', icon: '</>' },
+    { label: 'Plain Text (.txt)', format: 'text', icon: 'Aa' },
+  ]
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        data-testid="export-btn"
+        title="Export document"
+        className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <Download className="w-4 h-4" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute top-full right-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg py-1 min-w-[180px]">
+            {formats.map(({ label, format, icon }) => (
+              <button
+                key={format}
+                type="button"
+                data-testid={`export-${format}`}
+                onClick={() => {
+                  exportAndDownload(editor, format, title)
+                  setOpen(false)
+                }}
+                className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors text-popover-foreground flex items-center gap-2"
+              >
+                <span className="text-xs font-mono w-6 text-muted-foreground">{icon}</span>
+                {label}
+              </button>
+            ))}
+            <div className="h-px bg-border my-1" />
+            <button
+              type="button"
+              data-testid="export-print"
+              onClick={() => {
+                setOpen(false)
+                window.print()
+              }}
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors text-popover-foreground flex items-center gap-2"
+            >
+              <Printer className="w-3.5 h-3.5 text-muted-foreground" />
+              Print / Save as PDF
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Editor Page
+// ---------------------------------------------------------------------------
+
 export default function DocumentEditorPage() {
   const { docId } = useParams<{ docId: string }>()
   const navigate = useNavigate()
@@ -120,40 +194,52 @@ export default function DocumentEditorPage() {
   const selfShare = docShares.find((s) => s.data.ShareType === 'self') ?? docShares[0]
   const docTitle = selfShare?.data.Title ?? 'Document'
 
-  const { text, setText, synced, canWrite } = useYjsRoom(docId ?? 'unknown', 'content')
+  // Yjs connection — YjsRoom DO. We rely on the Y.Doc directly and let
+  // Tiptap's Collaboration extension handle XML fragment sync. The `text`
+  // field returned here is unused for the rich editor but keeps the hook
+  // wired up for schema compatibility.
+  const { doc: ydoc, synced, canWrite } = useYjsRoom(docId ?? 'unknown', 'content')
 
   const userName = user?.name ?? 'Anonymous'
   const userColor = useMemo(
     () => (user?.id ? getUserColor(user.id) : '#94a3b8'),
     [user?.id],
   )
-  void userName
-  void userColor
+
+  const editor = useDocEditor({
+    doc: ydoc,
+    userName,
+    userColor,
+    synced,
+    canWrite,
+  })
 
   const [linkCopied, setLinkCopied] = useState(false)
 
-  // Template prefill — URL carries `?template=<markdown>`; only apply if empty.
+  // Template prefill — URL carries `?template=<markdown or html>`; only apply if empty.
   const templateApplied = useRef(false)
   useEffect(() => {
-    if (!synced || templateApplied.current) return
+    if (!editor || !synced || templateApplied.current) return
     const templateContent = searchParams.get('template')
     if (templateContent) {
       templateApplied.current = true
-      if (!text) setText(templateContent)
+      if (editor.isEmpty) {
+        editor.commands.setContent(templateContent)
+      }
       setSearchParams({}, { replace: true })
     }
-  }, [synced, text, searchParams, setText, setSearchParams])
+  }, [editor, synced, searchParams, setSearchParams])
 
   // Debounced metadata sync (wordCount + lastEditedAt) onto content_shares.
   const metaTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const docSharesRef = useRef(docShares)
   docSharesRef.current = docShares
 
-  useEffect(() => {
-    if (!canWrite || !docId || !synced) return
+  const handleUpdate = useCallback(() => {
+    if (!editor || !canWrite || !docId) return
     clearTimeout(metaTimerRef.current)
     metaTimerRef.current = setTimeout(() => {
-      const words = text.trim() ? text.trim().split(/\s+/).length : 0
+      const words = editor.storage.characterCount?.words({}) ?? 0
       const now = new Date().toISOString()
       for (const share of docSharesRef.current) {
         putShare(share.recordId, {
@@ -163,8 +249,17 @@ export default function DocumentEditorPage() {
         }).catch(() => {})
       }
     }, 2000)
+  }, [editor, canWrite, docId, putShare])
+
+  useEffect(() => {
+    if (!editor) return
+    editor.on('update', handleUpdate)
+    return () => { editor.off('update', handleUpdate) }
+  }, [editor, handleUpdate])
+
+  useEffect(() => {
     return () => clearTimeout(metaTimerRef.current)
-  }, [text, canWrite, docId, synced, putShare])
+  }, [])
 
   const handleTitleSave = useCallback(
     async (newTitle: string) => {
@@ -176,11 +271,6 @@ export default function DocumentEditorPage() {
       }
     },
     [docShares, putShare],
-  )
-
-  const wordCount = useMemo(
-    () => (text.trim() ? text.trim().split(/\s+/).length : 0),
-    [text],
   )
 
   if (docs && !doc) {
@@ -215,7 +305,8 @@ export default function DocumentEditorPage() {
 
   return (
     <div data-testid="app-root" className="h-full bg-background flex flex-col">
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-card/60 backdrop-blur-sm">
+      {/* Title bar */}
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-card/60 backdrop-blur-sm print:hidden">
         <button
           type="button"
           onClick={() => navigate(backPath)}
@@ -236,9 +327,11 @@ export default function DocumentEditorPage() {
           <Users className="w-3.5 h-3.5 mr-1" />
         </div>
 
-        <span className="text-xs text-muted-foreground tabular-nums" data-testid="word-count">
-          {wordCount} words
-        </span>
+        {editor && (
+          <span className="text-xs text-muted-foreground tabular-nums" data-testid="word-count">
+            {editor.storage.characterCount?.words({}) ?? 0} words
+          </span>
+        )}
 
         {canWrite && user && doc?.data.visibility === 'public' && (
           <button
@@ -267,29 +360,28 @@ export default function DocumentEditorPage() {
         >
           {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
         </button>
+
+        {editor && <ExportMenu editor={editor} title={docTitle} />}
       </div>
 
       {!canWrite && (
         <div
           data-testid="readonly-banner"
-          className="flex items-center gap-2 px-4 py-2 bg-muted/50 border-b border-border text-sm text-muted-foreground"
+          className="flex items-center gap-2 px-4 py-2 bg-muted/50 border-b border-border text-sm text-muted-foreground print:hidden"
         >
           <Lock className="w-3.5 h-3.5" />
           You are viewing this document in read-only mode.
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-8 lg:px-12 py-8">
-          <textarea
-            data-testid="editor-content"
-            value={text}
-            onChange={(e) => canWrite && setText(e.target.value)}
-            readOnly={!canWrite}
-            placeholder={canWrite ? 'Start writing...' : ''}
-            className="w-full min-h-[60vh] bg-transparent text-foreground text-base leading-relaxed outline-none resize-none font-mono"
-            style={{ fieldSizing: 'content' } as React.CSSProperties}
-          />
+      {/* Toolbar */}
+      {editor && <EditorToolbar editor={editor} disabled={!canWrite} />}
+
+      {/* Editor content with find/replace overlay */}
+      <div className="flex-1 overflow-y-auto relative z-0">
+        {editor && <FindReplaceBar editor={editor} />}
+        <div className="max-w-3xl mx-auto px-8 lg:px-12">
+          <EditorContent editor={editor} className="tiptap" data-testid="editor-content" />
         </div>
       </div>
     </div>

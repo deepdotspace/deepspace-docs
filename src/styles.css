@@ -1,4 +1,5 @@
 @import "tailwindcss" source(none);
+@import "./features/docs/editor/editor.css";
 
 /* Scan local source + SDK components for Tailwind class usage */
 @source "./**/*.{ts,tsx}";
