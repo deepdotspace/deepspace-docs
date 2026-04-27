@@ -12,3 +12,10 @@ export { default as FindReplaceBar } from './FindReplaceBar'
 export { exportDocument, exportAndDownload, type ExportFormat } from './export'
 export { EditorContent } from '@tiptap/react'
 export { countWordsInDocument } from './wordCount'
+export {
+  DocEditorSurface,
+  PAGE_HEIGHT_PX,
+  PAGE_WIDTH_PX,
+  GAP_PX,
+  TYPICAL_WORDS_PER_PAGE,
+} from './DocEditorSurface'

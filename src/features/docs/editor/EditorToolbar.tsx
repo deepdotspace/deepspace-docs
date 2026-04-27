@@ -531,7 +531,7 @@ export default function EditorToolbar({ editor, disabled = false, onAddComment }
   return (
     <div
       data-testid="editor-toolbar"
-      className={`flex items-center flex-wrap gap-0.5 px-3 py-1.5 border-b border-border bg-card sticky top-0 z-30 ${
+      className={`flex items-center flex-wrap gap-0.5 px-3 py-1.5 border-b border-border bg-card sticky top-0 z-20 ${
         disabled ? 'opacity-50 pointer-events-none' : ''
       }`}
     >

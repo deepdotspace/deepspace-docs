@@ -589,15 +589,25 @@ function DocSection({
       <motion.button
         key="blank-doc-tile"
         type="button"
-        whileHover={{ scale: 0.98 }}
+        whileHover={{ y: -2 }}
         onClick={() => onCreateDoc()}
         data-testid="blank-doc-tile"
-        className="flex aspect-[3/4] cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-el-line bg-el-surface/20 text-el-muted transition-all hover:border-el-accent hover:text-el-accent"
+        className="animate-etheris-fade-in group w-full cursor-pointer rounded-xl border-2 border-dashed border-el-line bg-el-surface/20 p-4 text-left shadow-sm transition-all hover:border-el-accent/35 hover:shadow-md"
       >
-        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-el-surface shadow-sm ring-1 ring-el-line">
-          <Plus className="h-5 w-5" strokeWidth={2.5} />
+        {/* Same frame + aspect as `DocumentPreview` so the cell matches `DocCard` */}
+        <div className="relative mb-4 aspect-[3/4] w-full overflow-hidden rounded-lg border border-black/[0.03] bg-el-bg shadow-sm dark:border-el-line">
+          <div className="flex h-full w-full items-center justify-center text-el-muted">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-el-surface ring-1 ring-el-line group-hover:text-el-accent">
+              <Plus className="h-5 w-5" strokeWidth={2.5} />
+            </div>
+          </div>
         </div>
-        <span className="text-[10px] font-bold uppercase tracking-[0.15em]">Blank Doc</span>
+        <div className="min-w-0">
+          <h3 className="truncate text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
+            Blank doc
+          </h3>
+          <p className="mt-0.5 text-[10px] font-medium text-el-muted">Create a new document</p>
+        </div>
       </motion.button>
     ) : null
 

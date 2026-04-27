@@ -68,6 +68,77 @@
   line-height: 1.75;
 }
 
+/* Editor shell: very light “desk” (GDocs is ~#f8f9fa; we go a touch lighter) */
+.doc-editor-canvas {
+  background-color: #fbfbfc;
+}
+
+.dark .doc-editor-canvas {
+  background-color: color-mix(in srgb, var(--color-background, #0a0a0a) 96%, #ffffff 4%);
+}
+
+.doc-page-frame {
+  isolation: isolate;
+}
+
+.doc-page-stack {
+  width: 100%;
+}
+
+/* Same top & bottom inset on the “paper” so the last line matches the header line (GDocs-like). */
+.doc-page-padding {
+  --doc-pad-v: 0.42in;
+  --doc-pad-h: 0.38in;
+  padding: var(--doc-pad-v) var(--doc-pad-h);
+}
+
+@media (min-width: 640px) {
+  .doc-page-padding {
+    --doc-pad-v: 0.55in;
+    --doc-pad-h: 0.65in;
+    padding: var(--doc-pad-v) var(--doc-pad-h);
+  }
+}
+
+@media (min-width: 1024px) {
+  .doc-page-padding {
+    /* Slightly tighter than 1" so content starts a bit higher; bottom matches top */
+    --doc-pad-v: 0.62in;
+    --doc-pad-h: 0.75in;
+    padding: var(--doc-pad-v) var(--doc-pad-h);
+  }
+}
+
+/* 1" margins on wrapper (DocEditorSurface); body ~6.5" wide @ 8.5" “paper” */
+.tiptap.doc-editor-page {
+  min-height: 0;
+  padding: 0;
+  font-size: 11pt;
+  line-height: 1.15;
+  color: var(--color-foreground);
+}
+
+.doc-soft-page-break {
+  display: block;
+  flex: none;
+  width: 100%;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* First block flush to the top inset (no extra margin above the first line) */
+.tiptap.doc-editor-page > *:first-child {
+  margin-top: 0 !important;
+}
+
+
+@media (max-width: 640px) {
+  .tiptap.doc-editor-page {
+    font-size: 16px;
+    line-height: 1.6;
+  }
+}
+
 /* Compact read-only previews on the document list (first page clip) */
 .tiptap.doc-preview-tiptap {
   min-height: 0;
@@ -413,8 +484,36 @@
     display: none !important;
   }
 
+  .doc-editor-canvas {
+    background: white !important;
+  }
+
+  .doc-page-frame {
+    min-height: 0 !important;
+  }
+
+  .doc-page-stack,
+  .doc-paged-content {
+    min-height: 0 !important;
+  }
+
+  .doc-page-face {
+    display: none !important;
+    min-height: 0 !important;
+    transform: none !important;
+  }
+
+  .doc-page-padding {
+    padding: 0 !important;
+  }
+
+  .doc-soft-page-break {
+    display: none !important;
+  }
+
   /* Make the editor content fill the page */
-  .tiptap {
+  .tiptap,
+  .tiptap.doc-editor-page {
     padding: 0;
     font-size: 12pt;
     line-height: 1.6;
