@@ -14,7 +14,16 @@
  * DO — see `DocumentEditorPage`.
  */
 
-import { useState, useCallback, useMemo, useEffect, type ReactNode } from 'react'
+import {
+  useState,
+  useCallback,
+  useMemo,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  type MutableRefObject,
+  type ReactNode,
+} from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
@@ -80,6 +89,109 @@ import {
 import { getFavorites, saveFavorites } from './favorites'
 
 type Share = RecordData<ContentShareFields>
+
+/** Own-docs list table: meta columns — header + DocRow must stay identical */
+const OWN_LIST_META_GAP = 'gap-6'
+const OWN_COL_VISIBILITY = 'w-28 shrink-0'
+const OWN_COL_OWNER = 'w-32 shrink-0 min-w-0'
+const OWN_COL_MODIFIED = 'w-36 shrink-0 text-right'
+const OWN_COL_ACTIONS = 'w-10 shrink-0'
+
+/** Shared-with-me list table */
+const SHARED_LIST_META_GAP = 'gap-8'
+const SHARED_COL_OWNER = 'w-36 shrink-0 min-w-0'
+const SHARED_COL_MODIFIED = 'w-36 shrink-0 text-right'
+const SHARED_COL_APP = 'w-20 shrink-0'
+const SHARED_COL_ACCESS = 'w-24 shrink-0 flex justify-end'
+
+const FOLDER_SHORTCUT_RENAME_BLUR_DEFER_MS = 200
+const FOLDER_SHORTCUT_RENAME_BLUR_GRACE_MS = 520
+
+function FolderShortcutRenameField({
+  folderId,
+  renameFolderValue,
+  setRenameFolderValue,
+  commitRenameFolderRef,
+  cancelRenameFolder,
+  blurTimerRef,
+  sessionStartRef,
+  testId,
+}: {
+  folderId: string
+  renameFolderValue: string
+  setRenameFolderValue: (v: string) => void
+  commitRenameFolderRef: MutableRefObject<() => void | Promise<void>>
+  cancelRenameFolder: () => void
+  blurTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>
+  sessionStartRef: MutableRefObject<number>
+  testId: string
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useLayoutEffect(() => {
+    const t =
+      typeof performance !== 'undefined' ? performance.now() : Date.now()
+    sessionStartRef.current = t
+    const el = inputRef.current
+    if (!el) return
+    const placeCaretAtEnd = () => {
+      const len = el.value.length
+      el.setSelectionRange(len, len)
+    }
+    el.focus({ preventScroll: true })
+    placeCaretAtEnd()
+    const raf = requestAnimationFrame(() => {
+      if (document.activeElement !== el) {
+        el.focus({ preventScroll: true })
+        placeCaretAtEnd()
+      }
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [folderId])
+
+  return (
+    <input
+      ref={inputRef}
+      value={renameFolderValue}
+      onChange={(e) => setRenameFolderValue(e.target.value)}
+      onFocus={() => {
+        if (blurTimerRef.current) {
+          clearTimeout(blurTimerRef.current)
+          blurTimerRef.current = null
+        }
+      }}
+      onBlur={() => {
+        if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
+        blurTimerRef.current = setTimeout(() => {
+          blurTimerRef.current = null
+          const t0 = sessionStartRef.current
+          const now =
+            typeof performance !== 'undefined' ? performance.now() : Date.now()
+          if (now - t0 < FOLDER_SHORTCUT_RENAME_BLUR_GRACE_MS) return
+          void commitRenameFolderRef.current()
+        }, FOLDER_SHORTCUT_RENAME_BLUR_DEFER_MS)
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          if (blurTimerRef.current) {
+            clearTimeout(blurTimerRef.current)
+            blurTimerRef.current = null
+          }
+          void commitRenameFolderRef.current()
+        }
+        if (e.key === 'Escape') {
+          if (blurTimerRef.current) {
+            clearTimeout(blurTimerRef.current)
+            blurTimerRef.current = null
+          }
+          cancelRenameFolder()
+        }
+      }}
+      data-testid={testId}
+      className="min-w-0 flex-1 rounded-md border border-el-line bg-el-bg px-2 py-1.5 text-[13px] font-semibold text-el-text outline-none focus-visible:ring-2 focus-visible:ring-el-accent/30"
+    />
+  )
+}
 
 function greetingForTime(): string {
   const h = new Date().getHours()
@@ -430,7 +542,7 @@ function DocRow({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
       onClick={() => onOpenDoc(contentId)}
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
-      className="group flex cursor-pointer items-center justify-between gap-4 border-b border-el-line bg-el-surface px-4 py-3 transition-colors last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
+      className="group flex cursor-pointer items-center gap-4 border-b border-el-line bg-el-surface px-4 py-3 transition-colors last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
     >
       <div className="flex min-w-0 flex-1 items-center gap-4">
         <DocumentPreview docId={contentId} variant="list" />
@@ -449,8 +561,10 @@ function DocRow({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
         </div>
       </div>
 
-      <div className="hidden min-w-0 items-center gap-6 text-[12px] text-el-muted md:flex">
-        <div className="inline-flex w-24 items-center gap-1">
+      <div
+        className={`hidden min-w-0 flex-nowrap items-center text-[12px] text-el-muted md:flex ${OWN_LIST_META_GAP}`}
+      >
+        <div className={`inline-flex ${OWN_COL_VISIBILITY} items-center gap-1`}>
           {visibility === 'public' ? (
             <Globe className="h-3 w-3 shrink-0 text-emerald-500" />
           ) : (
@@ -458,11 +572,13 @@ function DocRow({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
           )}
           <span className="truncate">{visibility === 'public' ? 'Public' : 'Private'}</span>
         </div>
-        <div className="w-32 truncate">{ownerLabel}</div>
-        <div className="w-28 text-right">{dateLabel}</div>
+        <div className={`${OWN_COL_OWNER} truncate`}>{ownerLabel}</div>
+        <div className={OWN_COL_MODIFIED}>{dateLabel}</div>
       </div>
 
-      {isOwnScope && renderActions && renderActions(share)}
+      <div className={`${OWN_COL_ACTIONS} hidden justify-end md:flex`}>
+        {isOwnScope && renderActions ? renderActions(share) : null}
+      </div>
     </motion.div>
   )
 }
@@ -506,13 +622,14 @@ function SharedDocTile({ share, onOpen }: { share: Share; onOpen: (share: Share)
 function SharedDocListRow({ share, onOpen }: { share: Share; onOpen: (share: Share) => void }) {
   const contentId = share.data.ContentId
   const dateLabel = formatShareDate(share)
+  const appLabel = share.data.SourceApp?.trim() || '—'
   return (
     <motion.div
       data-testid={`shared-doc-card-${contentId}`}
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
       onClick={() => onOpen(share)}
-      className="group flex cursor-pointer items-center justify-between gap-4 border-b border-el-line bg-el-surface px-4 py-3 transition-colors last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
+      className="group flex cursor-pointer items-center gap-4 border-b border-el-line bg-el-surface px-4 py-3 transition-colors last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
     >
       <div className="flex min-w-0 flex-1 items-center gap-4">
         <DocumentPreview docId={contentId} variant="list" />
@@ -529,22 +646,24 @@ function SharedDocListRow({ share, onOpen }: { share: Share; onOpen: (share: Sha
           </div>
         </div>
       </div>
-      <div className="hidden min-w-0 items-center gap-6 text-[12px] text-el-muted md:flex">
-        <div className="w-32 truncate">{share.data.OwnerName}</div>
-        <div className="w-28 text-right">{dateLabel}</div>
-        {share.data.SourceApp && (
-          <div className="w-20 truncate capitalize">{share.data.SourceApp}</div>
-        )}
-      </div>
-      <span
-        className={`shrink-0 rounded px-2 py-0.5 text-[10px] ${
-          share.data.Permission === 'edit'
-            ? 'bg-blue-500/10 text-blue-500'
-            : 'bg-el-bg text-el-muted'
-        }`}
+      <div
+        className={`hidden min-w-0 flex-nowrap items-center text-[12px] text-el-muted md:flex ${SHARED_LIST_META_GAP}`}
       >
-        {share.data.Permission === 'edit' ? 'Can edit' : 'View only'}
-      </span>
+        <div className={`${SHARED_COL_OWNER} truncate`}>{share.data.OwnerName}</div>
+        <div className={SHARED_COL_MODIFIED}>{dateLabel}</div>
+        <div className={`${SHARED_COL_APP} truncate capitalize`}>{appLabel}</div>
+        <div className={SHARED_COL_ACCESS}>
+          <span
+            className={`rounded px-2 py-0.5 text-[10px] ${
+              share.data.Permission === 'edit'
+                ? 'bg-blue-500/10 text-blue-500'
+                : 'bg-el-bg text-el-muted'
+            }`}
+          >
+            {share.data.Permission === 'edit' ? 'Can edit' : 'View only'}
+          </span>
+        </div>
+      </div>
     </motion.div>
   )
 }
@@ -649,15 +768,14 @@ function DocSection({
         </div>
       ) : (
         <div className="overflow-hidden rounded-xl border border-el-line bg-el-surface shadow-sm">
-          <div className="flex items-center justify-between border-b border-el-line bg-black/[0.02] px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-el-muted dark:bg-white/[0.03]">
-            <div className="flex-1">Name</div>
-            <div className="hidden gap-10 md:flex">
-              <div className="w-28">Visibility</div>
-              <div className="w-24 text-right">Words</div>
-              <div className="w-32">Owner</div>
-              <div className="w-36 text-right">Last modified</div>
-              <div className="w-6" />
+          <div className="flex items-center gap-4 border-b border-el-line bg-black/[0.02] px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-el-muted dark:bg-white/[0.03]">
+            <div className="min-w-0 flex-1">Name</div>
+            <div className={`hidden flex-nowrap md:flex ${OWN_LIST_META_GAP}`}>
+              <div className={OWN_COL_VISIBILITY}>Visibility</div>
+              <div className={OWN_COL_OWNER}>Owner</div>
+              <div className={OWN_COL_MODIFIED}>Last modified</div>
             </div>
+            <div className={`hidden md:block ${OWN_COL_ACTIONS}`} aria-hidden />
           </div>
           {sorted.map((share) => (
             <DocRow key={share.data.ContentId} share={share} {...tileProps} />
@@ -744,13 +862,21 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
   const { create, put, remove } = useMutations<DocumentFields>('documents')
 
   const { records: folderRecords } = useQuery<DocFolderFields>('doc_folders')
-  const { create: createFolder, remove: removeFolder } = useMutations<DocFolderFields>('doc_folders')
+  const {
+    create: createFolder,
+    put: putFolder,
+    remove: removeFolder,
+  } = useMutations<DocFolderFields>('doc_folders')
 
   const { records: allShares } = useQuery<ContentShareFields>('content_shares')
   const { create: createShare, put: putShare, remove: removeShare } = useMutations<ContentShareFields>('content_shares')
 
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [folderRenamingId, setFolderRenamingId] = useState<string | null>(null)
+  const [folderRenameValue, setFolderRenameValue] = useState('')
+  const folderShortcutRenameBlurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const folderShortcutRenameSessionStartRef = useRef(0)
   const [searchQuery, setSearchQuery] = useState('')
   const [sortBy, setSortBy] = useState<SortOption>('lastEdited')
   const [viewMode, setViewMode] = useState<ViewMode>('grid')
@@ -768,6 +894,13 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     const exists = (folderRecords ?? []).some((f) => f.recordId === libraryNav.folderId)
     if (!exists) setLibraryNav({ kind: 'all' })
   }, [folderRecords, libraryNav])
+
+  useEffect(() => {
+    return () => {
+      if (folderShortcutRenameBlurTimerRef.current)
+        clearTimeout(folderShortcutRenameBlurTimerRef.current)
+    }
+  }, [])
 
   const displayFirstName = user?.name?.trim().split(/\s+/)[0] ?? 'there'
 
@@ -1091,12 +1224,43 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
         owned.map((d) => put(d.recordId, { ...d.data, folderId: '' })),
       )
       await removeFolder(folderId)
+      setFolderRenamingId((id) => (id === folderId ? null : id))
       setLibraryNav((nav) =>
         nav.kind === 'folder' && nav.folderId === folderId ? { kind: 'all' } : nav,
       )
     },
     [documents, put, removeFolder, user?.id],
   )
+
+  const startRenameFolder = useCallback((folder: RecordData<DocFolderFields>) => {
+    setFolderRenamingId(folder.recordId)
+    setFolderRenameValue(folder.data.name ?? '')
+  }, [])
+
+  const commitRenameFolder = useCallback(async () => {
+    if (folderShortcutRenameBlurTimerRef.current) {
+      clearTimeout(folderShortcutRenameBlurTimerRef.current)
+      folderShortcutRenameBlurTimerRef.current = null
+    }
+    const id = folderRenamingId
+    const trimmed = folderRenameValue.trim()
+    setFolderRenamingId(null)
+    if (!id || !trimmed) return
+    const folder = myFolders.find((f) => f.recordId === id)
+    if (!folder || trimmed === (folder.data.name ?? '').trim()) return
+    await putFolder(id, { ...folder.data, name: trimmed }).catch(() => {})
+  }, [folderRenamingId, folderRenameValue, myFolders, putFolder])
+
+  const commitRenameFolderRef = useRef(commitRenameFolder)
+  commitRenameFolderRef.current = commitRenameFolder
+
+  const cancelRenameFolder = useCallback(() => {
+    if (folderShortcutRenameBlurTimerRef.current) {
+      clearTimeout(folderShortcutRenameBlurTimerRef.current)
+      folderShortcutRenameBlurTimerRef.current = null
+    }
+    setFolderRenamingId(null)
+  }, [])
 
   const handleMoveDocToFolder = useCallback(
     async (contentId: string, folderId: string) => {
@@ -1213,28 +1377,75 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
       <div className="mb-12 grid grid-cols-1 gap-3 md:grid-cols-4">
         {sortedFolders.map((folder) => {
           const selected = libraryNav.kind === 'folder' && libraryNav.folderId === folder.recordId
+          const isRenaming = folderRenamingId === folder.recordId
+
+          if (isRenaming) {
+            return (
+              <div
+                key={folder.recordId}
+                className="flex items-center gap-3 rounded-xl border border-el-accent/40 bg-el-surface p-3.5 shadow-sm ring-2 ring-el-accent/15"
+              >
+                <div className="rounded-lg bg-el-bg p-2 text-el-muted">
+                  <Folder className="h-4 w-4" />
+                </div>
+                <FolderShortcutRenameField
+                  folderId={folder.recordId}
+                  renameFolderValue={folderRenameValue}
+                  setRenameFolderValue={setFolderRenameValue}
+                  commitRenameFolderRef={commitRenameFolderRef}
+                  cancelRenameFolder={cancelRenameFolder}
+                  blurTimerRef={folderShortcutRenameBlurTimerRef}
+                  sessionStartRef={folderShortcutRenameSessionStartRef}
+                  testId={`folder-shortcut-rename-input-${folder.recordId}`}
+                />
+              </div>
+            )
+          }
+
           return (
-            <button
+            <div
               key={folder.recordId}
-              type="button"
-              data-testid={`folder-shortcut-${folder.recordId}`}
-              onClick={() => setLibraryNav({ kind: 'folder', folderId: folder.recordId })}
-              className={`group flex items-center gap-3 rounded-xl border bg-el-surface p-3.5 text-left shadow-sm transition-all ${
+              className={`group flex min-w-0 items-center rounded-xl border bg-el-surface shadow-sm transition-all ${
                 selected
                   ? 'border-el-accent/50 ring-2 ring-el-accent/10'
                   : 'border-el-line hover:border-el-accent/35'
               }`}
             >
-              <div className="rounded-lg bg-el-bg p-2 text-el-muted transition-all group-hover:bg-el-accent/5 group-hover:text-el-accent">
-                <Folder className="h-4 w-4" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] font-semibold text-el-text">
-                  {folder.data.name}
-                </span>
-              </div>
-              <ChevronRight className="h-3 w-3 shrink-0 text-el-muted/50 transition-colors group-hover:text-el-accent" />
-            </button>
+              <button
+                type="button"
+                data-testid={`folder-shortcut-${folder.recordId}`}
+                onClick={() => setLibraryNav({ kind: 'folder', folderId: folder.recordId })}
+                className="flex min-w-0 flex-1 items-center gap-3 p-3.5 text-left min-h-[52px]"
+              >
+                <div className="rounded-lg bg-el-bg p-2 text-el-muted transition-all group-hover:bg-el-accent/5 group-hover:text-el-accent">
+                  <Folder className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] font-semibold text-el-text">{folder.data.name}</span>
+                </div>
+              </button>
+              <button
+                type="button"
+                data-testid={`folder-shortcut-rename-${folder.recordId}`}
+                title="Rename folder"
+                aria-label={`Rename folder ${folder.data.name}`}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                }}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  startRenameFolder(folder)
+                }}
+                className="relative z-[1] shrink-0 rounded-md p-2 text-el-muted opacity-0 transition-opacity hover:bg-el-bg hover:text-el-accent group-hover:opacity-100 focus-visible:opacity-100"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+              <ChevronRight
+                className="mr-3 h-3 w-3 shrink-0 text-el-muted/50 transition-colors group-hover:text-el-accent pointer-events-none"
+                aria-hidden
+              />
+            </div>
           )
         })}
 
@@ -1496,6 +1707,12 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
           onToggleCollapsed={toggleSidebarCollapsed}
           onCreateFolder={handleCreateFolder}
           onDeleteFolder={handleDeleteFolder}
+          onStartRenameFolder={startRenameFolder}
+          renamingFolderId={folderRenamingId}
+          renameFolderValue={folderRenameValue}
+          setRenameFolderValue={setFolderRenameValue}
+          onCommitRenameFolder={commitRenameFolder}
+          onCancelRenameFolder={cancelRenameFolder}
         />
       ) : null}
 
@@ -1617,14 +1834,13 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
                 data-testid="shared-doc-list"
                 className="overflow-hidden rounded-xl border border-el-line bg-el-surface shadow-sm"
               >
-                <div className="flex items-center justify-between border-b border-el-line bg-black/[0.02] px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-el-muted dark:bg-white/[0.03]">
-                  <div className="flex-1">Name</div>
-                  <div className="hidden gap-8 md:flex">
-                    <div className="w-36">Owner</div>
-                    <div className="w-24 text-right">Words</div>
-                    <div className="w-36 text-right">Modified</div>
-                    <div className="w-20">App</div>
-                    <div className="w-24 text-right">Access</div>
+                <div className="flex items-center gap-4 border-b border-el-line bg-black/[0.02] px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-el-muted dark:bg-white/[0.03]">
+                  <div className="min-w-0 flex-1">Name</div>
+                  <div className={`hidden flex-nowrap md:flex ${SHARED_LIST_META_GAP}`}>
+                    <div className={SHARED_COL_OWNER}>Owner</div>
+                    <div className={SHARED_COL_MODIFIED}>Modified</div>
+                    <div className={SHARED_COL_APP}>App</div>
+                    <div className={SHARED_COL_ACCESS}>Access</div>
                   </div>
                 </div>
                 {sharedWithMe.map((share) => (

@@ -359,7 +359,7 @@ export default function DocumentEditorPage() {
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [])
 
-  // Template prefill — URL carries `?template=<markdown or html>`; only apply if empty.
+  // Template prefill — URL carries `?template=<HTML fragment>` (TipTap parses strings as HTML); only apply if empty.
   const templateApplied = useRef(false)
   useEffect(() => {
     if (!editor || !synced || templateApplied.current) return

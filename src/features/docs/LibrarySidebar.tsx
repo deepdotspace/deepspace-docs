@@ -2,7 +2,15 @@
  * Etheris-style library sidebar: nav items + folder list, collapsible width.
  */
 
-import { useCallback, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MutableRefObject,
+  type ReactNode,
+} from 'react'
 import type { RecordData } from 'deepspace'
 import {
   FileText,
@@ -10,6 +18,7 @@ import {
   FolderPlus,
   LayoutGrid,
   PanelLeftClose,
+  Pencil,
   Star,
   Trash2,
 } from 'lucide-react'
@@ -82,6 +91,95 @@ function NavRow({
   )
 }
 
+const FOLDER_RENAME_BLUR_DEFER_MS = 200
+const FOLDER_RENAME_BLUR_GRACE_MS = 520
+
+function SidebarFolderRenameField({
+  folderId,
+  renameFolderValue,
+  setRenameFolderValue,
+  onCommitFolderRenameRef,
+  onCancelRenameFolder,
+  blurTimerRef,
+  sessionStartRef,
+  testId,
+}: {
+  folderId: string
+  renameFolderValue: string
+  setRenameFolderValue: (v: string) => void
+  onCommitFolderRenameRef: MutableRefObject<() => void | Promise<void>>
+  onCancelRenameFolder: () => void
+  blurTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>
+  sessionStartRef: MutableRefObject<number>
+  testId: string
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useLayoutEffect(() => {
+    const t =
+      typeof performance !== 'undefined' ? performance.now() : Date.now()
+    sessionStartRef.current = t
+    const el = inputRef.current
+    if (!el) return
+    const placeCaretAtEnd = () => {
+      const len = el.value.length
+      el.setSelectionRange(len, len)
+    }
+    el.focus({ preventScroll: true })
+    placeCaretAtEnd()
+    const raf = requestAnimationFrame(() => {
+      if (document.activeElement !== el) {
+        el.focus({ preventScroll: true })
+        placeCaretAtEnd()
+      }
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [folderId])
+
+  return (
+    <input
+      ref={inputRef}
+      value={renameFolderValue}
+      onChange={(e) => setRenameFolderValue(e.target.value)}
+      onFocus={() => {
+        if (blurTimerRef.current) {
+          clearTimeout(blurTimerRef.current)
+          blurTimerRef.current = null
+        }
+      }}
+      onBlur={() => {
+        if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
+        blurTimerRef.current = setTimeout(() => {
+          blurTimerRef.current = null
+          const t0 = sessionStartRef.current
+          const now =
+            typeof performance !== 'undefined' ? performance.now() : Date.now()
+          if (now - t0 < FOLDER_RENAME_BLUR_GRACE_MS) return
+          void onCommitFolderRenameRef.current()
+        }, FOLDER_RENAME_BLUR_DEFER_MS)
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          if (blurTimerRef.current) {
+            clearTimeout(blurTimerRef.current)
+            blurTimerRef.current = null
+          }
+          void onCommitFolderRenameRef.current()
+        }
+        if (e.key === 'Escape') {
+          if (blurTimerRef.current) {
+            clearTimeout(blurTimerRef.current)
+            blurTimerRef.current = null
+          }
+          onCancelRenameFolder()
+        }
+      }}
+      data-testid={testId}
+      className="min-w-0 flex-1 rounded-md border border-el-line bg-el-bg px-2 py-1.5 text-[13px] text-el-text outline-none focus-visible:ring-2 focus-visible:ring-el-accent/30"
+    />
+  )
+}
+
 export interface LibrarySidebarProps {
   selection: LibraryNavSelection
   onSelect: (s: LibraryNavSelection) => void
@@ -90,6 +188,12 @@ export interface LibrarySidebarProps {
   onToggleCollapsed: () => void
   onCreateFolder: (name: string) => void | Promise<void>
   onDeleteFolder: (folderId: string) => void | Promise<void>
+  onStartRenameFolder: (folder: RecordData<DocFolderFields>) => void
+  renamingFolderId: string | null
+  renameFolderValue: string
+  setRenameFolderValue: (v: string) => void
+  onCommitRenameFolder: () => void | Promise<void>
+  onCancelRenameFolder: () => void
 }
 
 export function LibrarySidebar({
@@ -100,9 +204,26 @@ export function LibrarySidebar({
   onToggleCollapsed,
   onCreateFolder,
   onDeleteFolder,
+  onStartRenameFolder,
+  renamingFolderId,
+  renameFolderValue,
+  setRenameFolderValue,
+  onCommitRenameFolder,
+  onCancelRenameFolder,
 }: LibrarySidebarProps) {
   const [addingFolder, setAddingFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+  /** Defers blur commit so focus transitions / remounts don't exit rename immediately. */
+  const folderRenameBlurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const folderRenameSessionStartRef = useRef(0)
+  const onCommitFolderRenameRef = useRef(onCommitRenameFolder)
+  onCommitFolderRenameRef.current = onCommitRenameFolder
+
+  useEffect(() => {
+    return () => {
+      if (folderRenameBlurTimerRef.current) clearTimeout(folderRenameBlurTimerRef.current)
+    }
+  }, [])
 
   const submitNewFolder = useCallback(async () => {
     const name = newFolderName.trim()
@@ -213,33 +334,78 @@ export function LibrarySidebar({
               Folders
             </span>
             <div className="space-y-0.5">
-              {sortedFolders.map((f) => (
-                <NavRow
-                  key={f.recordId}
-                  active={selection.kind === 'folder' && selection.folderId === f.recordId}
-                  icon={Folder}
-                  label={f.data.name}
-                  testId={`library-nav-folder-${f.recordId}`}
-                  onClick={() => onSelect({ kind: 'folder', folderId: f.recordId })}
-                  collapsed={collapsed}
-                  trailing={
-                    <button
-                      type="button"
-                      data-testid={`delete-folder-${f.recordId}`}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        if (confirm(`Delete folder “${f.data.name}”? Documents inside will move to uncategorized.`)) {
-                          void onDeleteFolder(f.recordId)
-                        }
-                      }}
-                      className="shrink-0 rounded p-1 text-el-muted opacity-0 transition-all hover:bg-red-500/10 hover:text-red-600 group-hover:opacity-100"
-                      title="Delete folder"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  }
-                />
-              ))}
+              {sortedFolders.map((f) =>
+                renamingFolderId === f.recordId ? (
+                  <div
+                    key={f.recordId}
+                    className="group flex w-full min-w-0 items-center gap-0.5 rounded-md bg-el-accent/10 py-0.5 pl-0.5 dark:bg-el-accent/15"
+                  >
+                    <span className="flex h-9 w-10 shrink-0 items-center justify-center text-el-muted" aria-hidden>
+                      <Folder size={14} strokeWidth={1.8} />
+                    </span>
+                    <SidebarFolderRenameField
+                      folderId={f.recordId}
+                      renameFolderValue={renameFolderValue}
+                      setRenameFolderValue={setRenameFolderValue}
+                      onCommitFolderRenameRef={onCommitFolderRenameRef}
+                      onCancelRenameFolder={onCancelRenameFolder}
+                      blurTimerRef={folderRenameBlurTimerRef}
+                      sessionStartRef={folderRenameSessionStartRef}
+                      testId={`rename-folder-input-${f.recordId}`}
+                    />
+                  </div>
+                ) : (
+                  <NavRow
+                    key={f.recordId}
+                    active={selection.kind === 'folder' && selection.folderId === f.recordId}
+                    icon={Folder}
+                    label={f.data.name}
+                    testId={`library-nav-folder-${f.recordId}`}
+                    onClick={() => onSelect({ kind: 'folder', folderId: f.recordId })}
+                    collapsed={collapsed}
+                    trailing={
+                      <span className="relative z-[1] flex shrink-0 items-center gap-0.5">
+                        <button
+                          type="button"
+                          data-testid={`rename-folder-${f.recordId}`}
+                          onMouseDown={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onStartRenameFolder(f)
+                          }}
+                          className="rounded p-1 text-el-muted opacity-0 transition-all hover:bg-el-bg hover:text-el-accent group-hover:opacity-100"
+                          title="Rename folder"
+                          aria-label={`Rename folder ${f.data.name}`}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          data-testid={`delete-folder-${f.recordId}`}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (
+                              confirm(
+                                `Delete folder “${f.data.name}”? Documents inside will move to uncategorized.`,
+                              )
+                            ) {
+                              void onDeleteFolder(f.recordId)
+                            }
+                          }}
+                          className="rounded p-1 text-el-muted opacity-0 transition-all hover:bg-red-500/10 hover:text-red-600 group-hover:opacity-100"
+                          title="Delete folder"
+                          aria-label={`Delete folder ${f.data.name}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </span>
+                    }
+                  />
+                ),
+              )}
 
               {addingFolder ? (
                 <div className="py-1">
