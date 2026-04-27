@@ -23,3 +23,8 @@ export {
   DocumentOutlinePanel,
   DOCUMENT_OUTLINE_WIDTH_PX,
 } from './DocumentOutlinePanel'
+export {
+  PAGE_ZOOM_PRESETS,
+  normalizeCanvasZoom,
+  stepCanvasZoom,
+} from './pageZoomPresets'

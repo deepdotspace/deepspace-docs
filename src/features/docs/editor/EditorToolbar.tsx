@@ -7,7 +7,7 @@
  * [Link|Image|Table|HR] | [Sub|Sup|Code|CodeBlock] | [Clear]
  */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useEditorState, type Editor } from '@tiptap/react'
 import {
   Undo2,
@@ -38,12 +38,18 @@ import {
   Indent,
   Outdent,
   MessageSquarePlus,
+  Plus,
 } from 'lucide-react'
 
-interface EditorToolbarProps {
+import { PAGE_ZOOM_PRESETS, normalizeCanvasZoom } from './pageZoomPresets'
+
+export interface EditorToolbarProps {
   editor: Editor
   disabled?: boolean
   onAddComment?: () => void
+  /** Page canvas zoom (editor area only); discrete presets in toolbar. */
+  canvasZoom?: number
+  onCanvasZoomChange?: (zoom: number) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +158,259 @@ function HeadingDropdown({ editor }: { editor: Editor }) {
                 )}
               </button>
             ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Page zoom (canvas)
+// ---------------------------------------------------------------------------
+
+function PageZoomDropdown({
+  canvasZoom,
+  onCanvasZoomChange,
+}: {
+  canvasZoom: number
+  onCanvasZoomChange: (z: number) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const normalized = normalizeCanvasZoom(canvasZoom)
+  const label =
+    PAGE_ZOOM_PRESETS.find((p) => Math.abs(p.value - normalized) < 0.001)?.label ??
+    `${Math.round(canvasZoom * 100)}%`
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        data-testid="toolbar-page-zoom"
+        title="Page zoom"
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1 px-2 py-1 rounded text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors min-w-[3.25rem] tabular-nums"
+      >
+        {label}
+        <svg className="w-3 h-3 shrink-0" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
+          <path d="M3 5l3 3 3-3" />
+        </svg>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg py-1 min-w-[5.5rem]">
+            {PAGE_ZOOM_PRESETS.map(({ label: lb, value }) => {
+              const selected = Math.abs(value - normalized) < 0.001
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  data-testid={`toolbar-page-zoom-${Math.round(value * 100)}`}
+                  onClick={() => {
+                    onCanvasZoomChange(value)
+                    setOpen(false)
+                  }}
+                  className={`w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors tabular-nums ${
+                    selected ? 'text-primary font-medium' : 'text-popover-foreground'
+                  }`}
+                >
+                  {lb}
+                </button>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Font family
+// ---------------------------------------------------------------------------
+
+const FONT_OPTIONS: { label: string; value: string }[] = [
+  { label: 'Default', value: '' },
+  { label: 'Arial', value: 'Arial, Helvetica, sans-serif' },
+  { label: 'Times New Roman', value: 'Times New Roman, Times, serif' },
+  { label: 'Georgia', value: 'Georgia, serif' },
+  { label: 'Courier New', value: 'Courier New, Courier, monospace' },
+  { label: 'Verdana', value: 'Verdana, Geneva, sans-serif' },
+  { label: 'Trebuchet MS', value: 'Trebuchet MS, sans-serif' },
+  { label: 'Comic Sans MS', value: 'Comic Sans MS, cursive' },
+  { label: 'Impact', value: 'Impact, Haettenschweiler, Arial Narrow Bold, sans-serif' },
+  { label: 'Palatino', value: 'Palatino Linotype, Palatino, serif' },
+  { label: 'Garamond', value: 'Garamond, Baskerville, serif' },
+  { label: 'Lucida Sans', value: 'Lucida Sans Unicode, Lucida Grande, sans-serif' },
+  { label: 'Tahoma', value: 'Tahoma, Geneva, sans-serif' },
+  { label: 'System UI', value: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif' },
+]
+
+function FontFamilyDropdown({ editor }: { editor: Editor }) {
+  const [open, setOpen] = useState(false)
+  const current = useEditorState({
+    editor,
+    selector: (snap) =>
+      (snap.editor.getAttributes('textStyle').fontFamily as string | undefined) ?? '',
+  })
+
+  const currentLabel =
+    FONT_OPTIONS.find((f) => f.value === current)?.label ??
+    (current ? (current.split(',')[0]?.trim() ?? 'Font') : 'Font')
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        data-testid="toolbar-font-family"
+        title="Font"
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1 px-2 py-1 rounded text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors max-w-[7.5rem] min-w-[4rem]"
+      >
+        <span className="truncate">{currentLabel}</span>
+        <svg className="w-3 h-3 shrink-0" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
+          <path d="M3 5l3 3 3-3" />
+        </svg>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg py-1 min-w-[11rem] max-h-[min(280px,50vh)] overflow-y-auto">
+            {FONT_OPTIONS.map(({ label, value }) => (
+              <button
+                key={label}
+                type="button"
+                data-testid={`toolbar-font-${label.toLowerCase().replace(/\s+/g, '-')}`}
+                onClick={() => {
+                  if (!value) editor.chain().focus().unsetFontFamily().run()
+                  else editor.chain().focus().setFontFamily(value).run()
+                  setOpen(false)
+                }}
+                className={`w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors ${
+                  current === value ? 'text-primary font-medium' : 'text-popover-foreground'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Align & indent (single dropdown)
+// ---------------------------------------------------------------------------
+
+function AlignIndentDropdown({ editor }: { editor: Editor }) {
+  const [open, setOpen] = useState(false)
+
+  const { align, canIndent, canOutdent } = useEditorState({
+    editor,
+    selector: (snap) => {
+      const ed = snap.editor
+      const a: 'left' | 'center' | 'right' | 'justify' = ed.isActive({ textAlign: 'center' })
+        ? 'center'
+        : ed.isActive({ textAlign: 'right' })
+          ? 'right'
+          : ed.isActive({ textAlign: 'justify' })
+            ? 'justify'
+            : 'left'
+      return {
+        align: a,
+        canIndent: ed.can().sinkListItem('listItem'),
+        canOutdent: ed.can().liftListItem('listItem'),
+      }
+    },
+  })
+
+  const ActiveAlignIcon =
+    align === 'center'
+      ? AlignCenter
+      : align === 'right'
+        ? AlignRight
+        : align === 'justify'
+          ? AlignJustify
+          : AlignLeft
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        data-testid="toolbar-align-indent-menu"
+        title="Alignment & indent"
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1 px-2 py-1 rounded text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+      >
+        <ActiveAlignIcon className="w-4 h-4" />
+        <svg className="w-3 h-3 shrink-0" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
+          <path d="M3 5l3 3 3-3" />
+        </svg>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg py-1 min-w-[11rem]">
+            <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Alignment
+            </div>
+            {(
+              [
+                { id: 'left' as const, label: 'Align left', Icon: AlignLeft },
+                { id: 'center' as const, label: 'Align center', Icon: AlignCenter },
+                { id: 'right' as const, label: 'Align right', Icon: AlignRight },
+                { id: 'justify' as const, label: 'Justify', Icon: AlignJustify },
+              ] as const
+            ).map(({ id, label, Icon }) => (
+              <button
+                key={id}
+                type="button"
+                data-testid={`toolbar-align-${id}`}
+                onClick={() => {
+                  editor.chain().focus().setTextAlign(id).run()
+                  setOpen(false)
+                }}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted transition-colors ${
+                  align === id ? 'text-primary font-medium' : 'text-popover-foreground'
+                }`}
+              >
+                <Icon className="w-4 h-4 shrink-0 opacity-80" />
+                {label}
+              </button>
+            ))}
+            <div className="my-1 h-px bg-border" />
+            <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Indentation
+            </div>
+            <button
+              type="button"
+              data-testid="toolbar-indent"
+              disabled={!canIndent}
+              onClick={() => {
+                editor.chain().focus().sinkListItem('listItem').run()
+                setOpen(false)
+              }}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-popover-foreground hover:bg-muted transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Indent className="w-4 h-4 shrink-0 opacity-80" />
+              Increase indent
+            </button>
+            <button
+              type="button"
+              data-testid="toolbar-outdent"
+              disabled={!canOutdent}
+              onClick={() => {
+                editor.chain().focus().liftListItem('listItem').run()
+                setOpen(false)
+              }}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-popover-foreground hover:bg-muted transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Outdent className="w-4 h-4 shrink-0 opacity-80" />
+              Decrease indent
+            </button>
           </div>
         </>
       )}
@@ -283,26 +542,52 @@ function ImageButton({ editor }: { editor: Editor }) {
 
 const TEXT_COLORS = [
   { label: 'Default', value: '' },
+  { label: 'Black', value: '#000000' },
+  { label: 'Dark gray', value: '#374151' },
+  { label: 'Gray', value: '#6b7280' },
+  { label: 'Light gray', value: '#9ca3af' },
+  { label: 'White', value: '#ffffff' },
   { label: 'Red', value: '#ef4444' },
   { label: 'Orange', value: '#f97316' },
+  { label: 'Amber', value: '#f59e0b' },
   { label: 'Yellow', value: '#eab308' },
+  { label: 'Lime', value: '#84cc16' },
   { label: 'Green', value: '#22c55e' },
+  { label: 'Emerald', value: '#10b981' },
+  { label: 'Teal', value: '#14b8a6' },
+  { label: 'Cyan', value: '#06b6d4' },
+  { label: 'Sky', value: '#0ea5e9' },
   { label: 'Blue', value: '#3b82f6' },
-  { label: 'Purple', value: '#8b5cf6' },
+  { label: 'Indigo', value: '#6366f1' },
+  { label: 'Violet', value: '#8b5cf6' },
+  { label: 'Purple', value: '#a855f7' },
+  { label: 'Fuchsia', value: '#d946ef' },
   { label: 'Pink', value: '#ec4899' },
-  { label: 'Gray', value: '#6b7280' },
+  { label: 'Rose', value: '#f43f5e' },
+  { label: 'Brown', value: '#92400e' },
 ]
 
 const HIGHLIGHT_COLORS = [
   { label: 'None', value: '' },
-  { label: 'Yellow', value: '#fbbf24' },
-  { label: 'Green', value: '#86efac' },
-  { label: 'Blue', value: '#93c5fd' },
-  { label: 'Purple', value: '#c4b5fd' },
-  { label: 'Pink', value: '#f9a8d4' },
+  { label: 'Yellow', value: '#fef08a' },
+  { label: 'Amber', value: '#fde68a' },
   { label: 'Orange', value: '#fdba74' },
-  { label: 'Red', value: '#fca5a5' },
-  { label: 'Gray', value: '#d1d5db' },
+  { label: 'Peach', value: '#ffedd5' },
+  { label: 'Pink', value: '#fbcfe8' },
+  { label: 'Rose', value: '#fecdd3' },
+  { label: 'Red', value: '#fecaca' },
+  { label: 'Mint', value: '#d1fae5' },
+  { label: 'Green', value: '#bbf7d0' },
+  { label: 'Lime', value: '#d9f99d' },
+  { label: 'Teal', value: '#99f6e4' },
+  { label: 'Cyan', value: '#a5f3fc' },
+  { label: 'Sky', value: '#bae6fd' },
+  { label: 'Blue', value: '#bfdbfe' },
+  { label: 'Indigo', value: '#c7d2fe' },
+  { label: 'Violet', value: '#ddd6fe' },
+  { label: 'Purple', value: '#e9d5ff' },
+  { label: 'Gray', value: '#e5e7eb' },
+  { label: 'Dark gray', value: '#d1d5db' },
 ]
 
 function ColorPickerButton({
@@ -347,13 +632,13 @@ function ColorPickerButton({
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg p-2">
-            <div className="grid grid-cols-3 gap-1" style={{ width: '120px' }}>
+            <div className="grid grid-cols-6 gap-1.5 w-[188px]">
               {colors.map(({ label, value }) => (
                 <button
                   key={label}
                   type="button"
                   title={label}
-                  data-testid={`color-${type}-${label.toLowerCase()}`}
+                  data-testid={`color-${type}-${label.toLowerCase().replace(/\s+/g, '-')}`}
                   onClick={() => {
                     if (type === 'text') {
                       if (!value) {
@@ -370,10 +655,12 @@ function ColorPickerButton({
                     }
                     setOpen(false)
                   }}
-                  className={`w-8 h-8 rounded border transition-colors ${
+                  className={`h-7 w-7 rounded border transition-colors ${
                     currentColor === value
                       ? 'border-primary ring-1 ring-primary'
-                      : 'border-border hover:border-foreground/30'
+                      : value === '#ffffff' || value === ''
+                        ? 'border-border hover:border-foreground/40'
+                        : 'border-border/60 hover:border-foreground/30'
                   }`}
                   style={{
                     backgroundColor: value || (type === 'text' ? 'var(--color-foreground)' : 'transparent'),
@@ -418,8 +705,12 @@ function fontSizeCssToPt(css: string | undefined | null): number | null {
   return null
 }
 
-function FontSizeDropdown({ editor }: { editor: Editor }) {
-  const [open, setOpen] = useState(false)
+const FONT_SIZE_PT_MIN = 8
+const FONT_SIZE_PT_MAX = 96
+
+function FontSizeControl({ editor }: { editor: Editor }) {
+  const [presetsOpen, setPresetsOpen] = useState(false)
+  const [draft, setDraft] = useState('')
   const fontSizeRaw = useEditorState({
     editor,
     selector: (snap) => (snap.editor.getAttributes('textStyle').fontSize as string | undefined) ?? '',
@@ -429,29 +720,89 @@ function FontSizeDropdown({ editor }: { editor: Editor }) {
     explicitPt != null ? Math.round(explicitPt) : DEFAULT_BODY_FONT_PT
   const isInherit = explicitPt == null
 
+  useEffect(() => {
+    setDraft(String(displayPt))
+  }, [displayPt])
+
+  const applyPt = (pt: number) => {
+    const cl = Math.max(FONT_SIZE_PT_MIN, Math.min(FONT_SIZE_PT_MAX, Math.round(pt)))
+    editor.chain().focus().setFontSize(`${cl}pt`).run()
+  }
+
+  const commitDraft = () => {
+    const n = Number.parseInt(draft, 10)
+    if (!Number.isFinite(n)) {
+      setDraft(String(displayPt))
+      return
+    }
+    applyPt(n)
+  }
+
   return (
-    <div className="relative">
-      <button
-        type="button"
-        data-testid="toolbar-font-size"
-        title={isInherit ? `Inherits paragraph size (body default ${DEFAULT_BODY_FONT_PT} pt)` : undefined}
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 px-2 py-1 rounded text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors min-w-[3rem] tabular-nums"
+    <div className="relative flex items-center">
+      <div
+        className="flex items-center rounded-md border border-border/80 bg-muted/15 pr-0.5"
+        title={
+          isInherit
+            ? `Inherits paragraph size (body default ${DEFAULT_BODY_FONT_PT} pt)`
+            : 'Font size (pt)'
+        }
       >
-        {displayPt}
-        <svg className="w-3 h-3 shrink-0" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
-          <path d="M3 5l3 3 3-3" />
-        </svg>
-      </button>
-      {open && (
+        <button
+          type="button"
+          data-testid="toolbar-fontsize-minus"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-l-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
+          disabled={displayPt <= FONT_SIZE_PT_MIN}
+          onClick={() => applyPt(displayPt - 1)}
+          aria-label="Decrease font size"
+        >
+          <Minus className="h-3.5 w-3.5" />
+        </button>
+        <input
+          type="text"
+          inputMode="numeric"
+          data-testid="toolbar-font-size-input"
+          className="h-7 w-9 border-0 bg-transparent px-0.5 text-center text-sm tabular-nums text-foreground outline-none focus:ring-0"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value.replace(/\D/g, ''))}
+          onBlur={commitDraft}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              commitDraft()
+            }
+          }}
+          aria-label="Font size in points"
+        />
+        <button
+          type="button"
+          data-testid="toolbar-fontsize-plus"
+          className="flex h-7 w-7 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
+          disabled={displayPt >= FONT_SIZE_PT_MAX}
+          onClick={() => applyPt(displayPt + 1)}
+          aria-label="Increase font size"
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          data-testid="toolbar-font-size"
+          className="flex h-7 w-6 shrink-0 items-center justify-center rounded-r-md text-muted-foreground hover:bg-muted hover:text-foreground"
+          onClick={() => setPresetsOpen(!presetsOpen)}
+          aria-label="Font size presets"
+        >
+          <svg className="h-3 w-3" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
+            <path d="M3 5l3 3 3-3" />
+          </svg>
+        </button>
+      </div>
+      {presetsOpen && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg py-1 min-w-[7rem] max-h-[min(320px,70vh)] overflow-y-auto">
+          <div className="fixed inset-0 z-40" onClick={() => setPresetsOpen(false)} />
+          <div className="absolute left-0 top-full z-50 mt-1 max-h-[min(320px,70vh)] min-w-[7rem] overflow-y-auto rounded-lg border border-border bg-popover py-1 shadow-lg">
             {FONT_SIZE_PT_PRESETS.map((pt) => {
               const selected =
-                !isInherit &&
-                explicitPt != null &&
-                Math.round(explicitPt) === pt
+                !isInherit && explicitPt != null && Math.round(explicitPt) === pt
               return (
                 <button
                   key={pt}
@@ -459,10 +810,10 @@ function FontSizeDropdown({ editor }: { editor: Editor }) {
                   data-testid={`toolbar-fontsize-${pt}`}
                   onClick={() => {
                     editor.chain().focus().setFontSize(`${pt}pt`).run()
-                    setOpen(false)
+                    setPresetsOpen(false)
                   }}
-                  className={`w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors tabular-nums ${
-                    selected ? 'text-primary font-medium' : 'text-popover-foreground'
+                  className={`w-full px-3 py-1.5 text-left text-sm tabular-nums transition-colors hover:bg-muted ${
+                    selected ? 'font-medium text-primary' : 'text-popover-foreground'
                   }`}
                 >
                   {pt}
@@ -548,7 +899,13 @@ function TableContextMenu({ editor }: { editor: Editor }) {
 // Main Toolbar
 // ---------------------------------------------------------------------------
 
-export default function EditorToolbar({ editor, disabled = false, onAddComment }: EditorToolbarProps) {
+export default function EditorToolbar({
+  editor,
+  disabled = false,
+  onAddComment,
+  canvasZoom = 1,
+  onCanvasZoomChange,
+}: EditorToolbarProps) {
   const iconSize = 'w-4 h-4'
 
   return (
@@ -581,8 +938,13 @@ export default function EditorToolbar({ editor, disabled = false, onAddComment }
       {/* Heading Dropdown */}
       <HeadingDropdown editor={editor} />
 
-      {/* Font Size Dropdown */}
-      <FontSizeDropdown editor={editor} />
+      <FontFamilyDropdown editor={editor} />
+
+      {onCanvasZoomChange && (
+        <PageZoomDropdown canvasZoom={canvasZoom} onCanvasZoomChange={onCanvasZoomChange} />
+      )}
+
+      <FontSizeControl editor={editor} />
 
       <Divider />
 
@@ -639,39 +1001,7 @@ export default function EditorToolbar({ editor, disabled = false, onAddComment }
 
       <Divider />
 
-      {/* Alignment */}
-      <ToolbarButton
-        onClick={() => editor.chain().focus().setTextAlign('left').run()}
-        active={editor.isActive({ textAlign: 'left' })}
-        testId="toolbar-align-left"
-        title="Align Left"
-      >
-        <AlignLeft className={iconSize} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().setTextAlign('center').run()}
-        active={editor.isActive({ textAlign: 'center' })}
-        testId="toolbar-align-center"
-        title="Align Center"
-      >
-        <AlignCenter className={iconSize} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().setTextAlign('right').run()}
-        active={editor.isActive({ textAlign: 'right' })}
-        testId="toolbar-align-right"
-        title="Align Right"
-      >
-        <AlignRight className={iconSize} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().setTextAlign('justify').run()}
-        active={editor.isActive({ textAlign: 'justify' })}
-        testId="toolbar-align-justify"
-        title="Justify"
-      >
-        <AlignJustify className={iconSize} />
-      </ToolbarButton>
+      <AlignIndentDropdown editor={editor} />
 
       <Divider />
 
@@ -699,24 +1029,6 @@ export default function EditorToolbar({ editor, disabled = false, onAddComment }
         title="Task List"
       >
         <ListChecks className={iconSize} />
-      </ToolbarButton>
-
-      {/* Indent / Outdent */}
-      <ToolbarButton
-        onClick={() => editor.chain().focus().sinkListItem('listItem').run()}
-        disabled={!editor.can().sinkListItem('listItem')}
-        testId="toolbar-indent"
-        title="Indent (Tab)"
-      >
-        <Indent className={iconSize} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().liftListItem('listItem').run()}
-        disabled={!editor.can().liftListItem('listItem')}
-        testId="toolbar-outdent"
-        title="Outdent (Shift+Tab)"
-      >
-        <Outdent className={iconSize} />
       </ToolbarButton>
 
       <Divider />

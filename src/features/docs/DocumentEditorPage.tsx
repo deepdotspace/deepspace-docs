@@ -35,16 +35,18 @@ import {
 import type { DocumentFields, ContentShareFields } from './types'
 import {
   useDocEditor,
-  EditorToolbar,
   FindReplaceBar,
   exportAndDownload,
   countWordsInDocument,
   DocEditorSurface,
   DocumentOutlinePanel,
   DOCUMENT_OUTLINE_WIDTH_PX,
+  normalizeCanvasZoom,
+  stepCanvasZoom,
   TYPICAL_WORDS_PER_PAGE,
   type ExportFormat,
 } from './editor'
+import EditorToolbar from './editor/EditorToolbar'
 import { useEditorState, type Editor } from '@tiptap/react'
 
 function WordCountDisplay({ editor, estPages }: { editor: Editor; estPages: number }) {
@@ -197,9 +199,6 @@ function ExportMenu({ editor, title }: { editor: Editor; title: string }) {
 // ---------------------------------------------------------------------------
 
 const CANVAS_ZOOM_STORAGE_KEY = 'docs2-editor-canvas-zoom'
-const CANVAS_ZOOM_MIN = 0.5
-const CANVAS_ZOOM_MAX = 2
-const CANVAS_ZOOM_STEP = 0.1
 
 export default function DocumentEditorPage() {
   const params = useParams<{ docId: string }>()
@@ -310,7 +309,7 @@ export default function DocumentEditorPage() {
       const raw = sessionStorage.getItem(CANVAS_ZOOM_STORAGE_KEY)
       const v = raw == null ? 1 : Number.parseFloat(raw)
       if (!Number.isFinite(v)) return 1
-      return Math.min(CANVAS_ZOOM_MAX, Math.max(CANVAS_ZOOM_MIN, Math.round(v * 100) / 100))
+      return normalizeCanvasZoom(v)
     } catch {
       return 1
     }
@@ -324,9 +323,6 @@ export default function DocumentEditorPage() {
   }, [canvasZoom])
 
   useEffect(() => {
-    const clamp = (z: number) =>
-      Math.min(CANVAS_ZOOM_MAX, Math.max(CANVAS_ZOOM_MIN, Math.round(z * 100) / 100))
-
     const onKeyDown = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey
       if (!mod) return
@@ -353,10 +349,10 @@ export default function DocumentEditorPage() {
         return
       }
       if (zoomIn) {
-        setCanvasZoom((z) => clamp(z + CANVAS_ZOOM_STEP))
+        setCanvasZoom((z) => stepCanvasZoom(z, 1))
         return
       }
-      setCanvasZoom((z) => clamp(z - CANVAS_ZOOM_STEP))
+      setCanvasZoom((z) => stepCanvasZoom(z, -1))
     }
 
     window.addEventListener('keydown', onKeyDown, true)
@@ -554,7 +550,14 @@ export default function DocumentEditorPage() {
       )}
 
       {/* Toolbar (sticky below header; z must stay below z-40 header) */}
-      {editor && <EditorToolbar editor={editor} disabled={!effectiveCanWrite} />}
+      {editor && (
+        <EditorToolbar
+          editor={editor}
+          disabled={!effectiveCanWrite}
+          canvasZoom={canvasZoom}
+          onCanvasZoomChange={setCanvasZoom}
+        />
+      )}
 
       {/* Editor canvas: full-width page; outline floats over the left edge */}
       <div className="relative z-0 flex min-h-0 flex-1 flex-col print:block">

@@ -19,6 +19,7 @@ import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
 import TextAlign from '@tiptap/extension-text-align'
 import { TextStyle, FontSize } from '@tiptap/extension-text-style'
+import { FontFamily } from '@tiptap/extension-text-style/font-family'
 import Color from '@tiptap/extension-color'
 import Highlight from '@tiptap/extension-highlight'
 import { ResizableImage } from './extensions/ResizableImage'
@@ -72,6 +73,7 @@ export function useDocEditor({
       TaskItem.configure({ nested: true }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       TextStyle,
+      FontFamily,
       FontSize,
       Color,
       Highlight.configure({ multicolor: true }),
