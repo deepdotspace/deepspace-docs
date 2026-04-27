@@ -14,7 +14,7 @@
  * DO — see `DocumentEditorPage`.
  */
 
-import { useState, useCallback, useMemo, useEffect } from 'react'
+import { useState, useCallback, useMemo, useEffect, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
@@ -108,6 +108,563 @@ function sortShares(shares: Share[], sortBy: SortOption): Share[] {
     default:
       return sorted
   }
+}
+
+function filterSharesBySearch(shares: Share[], searchQuery: string): Share[] {
+  if (!searchQuery.trim()) return shares
+  const q = searchQuery.toLowerCase()
+  return shares.filter((s) => s.data.Title?.toLowerCase().includes(q))
+}
+
+function formatShareDate(share: Share): string {
+  return share.data.LastEditedAt
+    ? new Date(share.data.LastEditedAt).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      })
+    : '—'
+}
+
+function DocumentDescription({
+  visibility,
+  wordCount,
+  ownerLabel,
+  dateLabel,
+}: {
+  visibility: DocumentFields['visibility']
+  wordCount: number
+  ownerLabel: string
+  dateLabel: string
+}) {
+  const visibilityLabel = visibility === 'public' ? 'Public' : 'Private'
+
+  return (
+    <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] font-medium leading-4 tracking-tight text-el-muted">
+      <span className="inline-flex shrink-0 items-center gap-1">
+        {visibility === 'public' ? (
+          <Globe className="h-3 w-3 text-emerald-500" />
+        ) : (
+          <Lock className="h-3 w-3" />
+        )}
+        {visibilityLabel}
+      </span>
+      <span className="shrink-0 text-el-muted/70">&middot;</span>
+      <span className="min-w-0 truncate">{ownerLabel}</span>
+      <span className="shrink-0 text-el-muted/70">&middot;</span>
+      <span className="shrink-0 whitespace-nowrap">{dateLabel}</span>
+      <span className="shrink-0 text-el-muted/70">&middot;</span>
+      <span className="tabular-nums">{wordCount} words</span>
+    </div>
+  )
+}
+
+function SharedDocumentDescription({
+  ownerName,
+  wordCount,
+  dateLabel,
+  sourceApp,
+}: {
+  ownerName: string
+  wordCount: number
+  dateLabel: string
+  sourceApp?: string
+}) {
+  return (
+    <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] font-medium leading-4 tracking-tight text-el-muted">
+      <span className="inline-flex min-w-0 items-center gap-1 text-blue-500">
+        <Share2 className="h-3 w-3 shrink-0" />
+        <span className="truncate">{ownerName}</span>
+      </span>
+      <span className="shrink-0 text-el-muted/70">&middot;</span>
+      <span className="shrink-0 whitespace-nowrap">{dateLabel}</span>
+      <span className="shrink-0 text-el-muted/70">&middot;</span>
+      <span className="tabular-nums">{wordCount} words</span>
+      {sourceApp && (
+        <>
+          <span className="shrink-0 text-el-muted/70">&middot;</span>
+          <span className="capitalize">{sourceApp}</span>
+        </>
+      )}
+    </div>
+  )
+}
+
+type DocumentActionsMenuProps = {
+  share: Share
+  visibility: DocumentFields['visibility']
+  isFav: boolean
+  docLookup: Map<string, RecordData<DocumentFields>>
+  sortedFolders: RecordData<DocFolderFields>[]
+  canModify: boolean
+  copiedId: string | null
+  toggleFavoriteById: (contentId: string) => void
+  toggleShareVisibility: (share: Share) => void | Promise<void>
+  handleMoveDocToFolder: (contentId: string, folderId: string) => void | Promise<void>
+  copyShareLink: (share: Share) => void
+  startRename: (share: Share) => void
+  deleteDocument: (contentId: string) => void | Promise<void>
+}
+
+function DocumentActionsMenu({
+  share,
+  visibility,
+  isFav,
+  docLookup,
+  sortedFolders,
+  canModify,
+  copiedId,
+  toggleFavoriteById,
+  toggleShareVisibility,
+  handleMoveDocToFolder,
+  copyShareLink,
+  startRename,
+  deleteDocument,
+}: DocumentActionsMenuProps) {
+  const contentId = share.data.ContentId
+  const doc = docLookup.get(contentId)
+  const currentF = doc?.data.folderId ?? ''
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          onClick={(e) => e.stopPropagation()}
+          data-testid={`doc-actions-btn-${contentId}`}
+          className="rounded-lg p-1.5 text-el-muted transition-colors hover:bg-el-bg hover:text-el-text data-[state=open]:bg-el-bg data-[state=open]:text-el-text"
+          title="Document actions"
+          aria-label={`Actions for ${share.data.Title}`}
+        >
+          <MoreVertical className="h-4 w-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="min-w-[190px] border-el-line bg-el-surface text-el-text"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <DropdownMenuLabel className="px-2 py-1.5 text-[11px] text-el-muted">
+          Document actions
+        </DropdownMenuLabel>
+        <DropdownMenuItem
+          className="cursor-pointer"
+          onSelect={() => toggleFavoriteById(contentId)}
+          data-testid={`fav-btn-${contentId}`}
+        >
+          <Star className={`h-4 w-4 ${isFav ? 'fill-yellow-500 text-yellow-500' : ''}`} />
+          {isFav ? 'Remove favorite' : 'Add favorite'}
+        </DropdownMenuItem>
+        {canModify && (
+          <>
+            <DropdownMenuItem
+              className="cursor-pointer"
+              onSelect={() => void toggleShareVisibility(share)}
+              data-testid={`visibility-btn-${contentId}`}
+            >
+              {visibility === 'public' ? (
+                <Globe className="h-4 w-4 text-emerald-500" />
+              ) : (
+                <Lock className="h-4 w-4" />
+              )}
+              {visibility === 'public' ? 'Make private' : 'Make public'}
+            </DropdownMenuItem>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger className="cursor-pointer">
+                <Folder className="h-4 w-4" />
+                Move to folder
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="min-w-[180px] border-el-line bg-el-surface text-el-text">
+                <DropdownMenuItem
+                  className="cursor-pointer"
+                  disabled={currentF === ''}
+                  onSelect={() => void handleMoveDocToFolder(contentId, '')}
+                >
+                  Uncategorized
+                </DropdownMenuItem>
+                {sortedFolders.map((f) => (
+                  <DropdownMenuItem
+                    key={f.recordId}
+                    className="cursor-pointer"
+                    disabled={currentF === f.recordId}
+                    onSelect={() => void handleMoveDocToFolder(contentId, f.recordId)}
+                  >
+                    {f.data.name}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuItem
+              className="cursor-pointer"
+              onSelect={() => copyShareLink(share)}
+              data-testid={`copy-link-btn-${contentId}`}
+            >
+              {copiedId === contentId ? (
+                <Check className="h-4 w-4 text-emerald-500" />
+              ) : (
+                <Link2 className="h-4 w-4" />
+              )}
+              {copiedId === contentId ? 'Copied link' : 'Copy share link'}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="cursor-pointer"
+              onSelect={() => startRename(share)}
+              data-testid={`rename-doc-btn-${contentId}`}
+            >
+              <Pencil className="h-4 w-4" />
+              Rename
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="cursor-pointer text-red-600 focus:text-red-600"
+              onSelect={() => void deleteDocument(contentId)}
+              data-testid={`delete-doc-btn-${contentId}`}
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+type OwnDocTileSharedProps = {
+  docLookup: Map<string, RecordData<DocumentFields>>
+  favorites: Set<string>
+  isOwnScope: boolean
+  userName: string | undefined
+  onOpenDoc: (contentId: string) => void
+  renamingId: string | null
+  renameValue: string
+  setRenameValue: (v: string) => void
+  handleRename: (contentId: string) => void
+  setRenamingId: (v: string | null) => void
+  renderActions?: (share: Share) => ReactNode
+}
+
+function DocCard({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
+  const {
+    docLookup,
+    isOwnScope,
+    userName,
+    onOpenDoc,
+    renamingId,
+    renameValue,
+    setRenameValue,
+    handleRename,
+    setRenamingId,
+    renderActions,
+  } = tile
+  const doc = docLookup.get(share.data.ContentId)
+  const visibility = doc?.data.visibility ?? 'private'
+  const contentId = share.data.ContentId
+  const ownerLabel = isOwnScope ? (userName ?? 'Me') : (share.data.OwnerName ?? 'User')
+  const dateLabel = formatShareDate(share)
+
+  return (
+    <motion.div
+      data-testid={`doc-card-${contentId}`}
+      onClick={() => onOpenDoc(contentId)}
+      whileHover={{ y: -2 }}
+      className="animate-etheris-fade-in group cursor-pointer rounded-xl border border-el-line bg-el-surface p-4 shadow-sm transition-all hover:border-el-accent/35 hover:shadow-md"
+    >
+      <DocumentPreview docId={contentId} variant="grid" />
+
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          {renamingId === contentId ? (
+            <input
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onBlur={() => handleRename(contentId)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleRename(contentId)
+                if (e.key === 'Escape') setRenamingId(null)
+              }}
+              onClick={(e) => e.stopPropagation()}
+              className="mb-0.5 w-full rounded-md border border-el-line bg-el-bg px-2 py-1 text-[13px] font-semibold text-el-text outline-none focus-visible:ring-2 focus-visible:ring-el-accent/30"
+              autoFocus
+              data-testid={`rename-input-${contentId}`}
+            />
+          ) : (
+            <h3 className="truncate text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
+              {share.data.Title}
+            </h3>
+          )}
+          <DocumentDescription
+            visibility={visibility}
+            wordCount={share.data.WordCount ?? 0}
+            ownerLabel={ownerLabel}
+            dateLabel={dateLabel}
+          />
+        </div>
+
+        {isOwnScope && renamingId !== contentId && renderActions && (
+          <div className="shrink-0">{renderActions(share)}</div>
+        )}
+      </div>
+    </motion.div>
+  )
+}
+
+function DocRow({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
+  const {
+    docLookup,
+    isOwnScope,
+    userName,
+    onOpenDoc,
+    renamingId,
+    renameValue,
+    setRenameValue,
+    handleRename,
+    setRenamingId,
+    renderActions,
+  } = tile
+  const doc = docLookup.get(share.data.ContentId)
+  const visibility = doc?.data.visibility ?? 'private'
+  const contentId = share.data.ContentId
+  const ownerLabel = isOwnScope ? (userName ?? 'Me') : (share.data.OwnerName ?? 'User')
+  const dateLabel = formatShareDate(share)
+
+  return (
+    <motion.div
+      data-testid={`doc-card-${contentId}`}
+      onClick={() => onOpenDoc(contentId)}
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="group flex cursor-pointer items-center justify-between gap-4 border-b border-el-line bg-el-surface px-4 py-3 transition-colors last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-4">
+        <DocumentPreview docId={contentId} variant="list" />
+
+        <div className="min-w-0 flex-1">
+          <h4 className="line-clamp-2 text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
+            {share.data.Title}
+          </h4>
+          <div className="md:hidden">
+            <DocumentDescription
+              visibility={visibility}
+              wordCount={share.data.WordCount ?? 0}
+              ownerLabel={ownerLabel}
+              dateLabel={dateLabel}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="hidden min-w-0 items-center gap-6 text-[12px] text-el-muted md:flex">
+        <div className="inline-flex w-24 items-center gap-1">
+          {visibility === 'public' ? (
+            <Globe className="h-3 w-3 shrink-0 text-emerald-500" />
+          ) : (
+            <Lock className="h-3 w-3 shrink-0" />
+          )}
+          <span className="truncate">{visibility === 'public' ? 'Public' : 'Private'}</span>
+        </div>
+        <div className="w-24 text-right tabular-nums">{share.data.WordCount ?? 0} words</div>
+        <div className="w-32 truncate">{ownerLabel}</div>
+        <div className="w-28 text-right">{dateLabel}</div>
+      </div>
+
+      {isOwnScope && renderActions && renderActions(share)}
+    </motion.div>
+  )
+}
+
+function SharedDocTile({ share, onOpen }: { share: Share; onOpen: (share: Share) => void }) {
+  const contentId = share.data.ContentId
+  const dateLabel = formatShareDate(share)
+  return (
+    <motion.div
+      data-testid={`shared-doc-card-${contentId}`}
+      whileHover={{ y: -2 }}
+      onClick={() => onOpen(share)}
+      className="animate-etheris-fade-in group cursor-pointer rounded-xl border border-el-line bg-el-surface p-4 shadow-sm transition-all hover:border-el-accent/35 hover:shadow-md"
+    >
+      <DocumentPreview docId={contentId} variant="grid" />
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
+            {share.data.Title}
+          </h3>
+          <SharedDocumentDescription
+            ownerName={share.data.OwnerName}
+            wordCount={share.data.WordCount ?? 0}
+            dateLabel={dateLabel}
+            sourceApp={share.data.SourceApp}
+          />
+        </div>
+        <span
+          className={`shrink-0 rounded px-2 py-0.5 text-[10px] ${
+            share.data.Permission === 'edit'
+              ? 'bg-blue-500/10 text-blue-500'
+              : 'bg-el-bg text-el-muted'
+          }`}
+        >
+          {share.data.Permission === 'edit' ? 'Can edit' : 'View only'}
+        </span>
+      </div>
+    </motion.div>
+  )
+}
+
+function SharedDocListRow({ share, onOpen }: { share: Share; onOpen: (share: Share) => void }) {
+  const contentId = share.data.ContentId
+  const dateLabel = formatShareDate(share)
+  return (
+    <motion.div
+      data-testid={`shared-doc-card-${contentId}`}
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      onClick={() => onOpen(share)}
+      className="group flex cursor-pointer items-center justify-between gap-4 border-b border-el-line bg-el-surface px-4 py-3 transition-colors last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-4">
+        <DocumentPreview docId={contentId} variant="list" />
+        <div className="min-w-0 flex-1">
+          <h4 className="line-clamp-2 text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
+            {share.data.Title}
+          </h4>
+          <div className="md:hidden">
+            <SharedDocumentDescription
+              ownerName={share.data.OwnerName}
+              wordCount={share.data.WordCount ?? 0}
+              dateLabel={dateLabel}
+              sourceApp={share.data.SourceApp}
+            />
+          </div>
+        </div>
+      </div>
+      <div className="hidden min-w-0 items-center gap-6 text-[12px] text-el-muted md:flex">
+        <div className="w-32 truncate">{share.data.OwnerName}</div>
+        <div className="w-24 text-right tabular-nums">{share.data.WordCount ?? 0} words</div>
+        <div className="w-28 text-right">{dateLabel}</div>
+        {share.data.SourceApp && (
+          <div className="w-20 truncate capitalize">{share.data.SourceApp}</div>
+        )}
+      </div>
+      <span
+        className={`shrink-0 rounded px-2 py-0.5 text-[10px] ${
+          share.data.Permission === 'edit'
+            ? 'bg-blue-500/10 text-blue-500'
+            : 'bg-el-bg text-el-muted'
+        }`}
+      >
+        {share.data.Permission === 'edit' ? 'Can edit' : 'View only'}
+      </span>
+    </motion.div>
+  )
+}
+
+type DocSectionProps = {
+  title: string
+  icon?: ReactNode
+  shares: Share[]
+  testId: string
+  showLeadingBlank?: boolean
+  showTitle?: boolean
+  searchQuery: string
+  sortBy: SortOption
+  viewMode: ViewMode
+  canModify: boolean
+  onCreateDoc: () => void
+  tileProps: OwnDocTileSharedProps
+}
+
+function DocSection({
+  title,
+  icon,
+  shares,
+  testId,
+  showLeadingBlank,
+  showTitle = true,
+  searchQuery,
+  sortBy,
+  viewMode,
+  canModify,
+  onCreateDoc,
+  tileProps,
+}: DocSectionProps) {
+  const filtered = filterSharesBySearch(shares, searchQuery)
+  const sorted = sortShares(filtered, sortBy)
+
+  if (sorted.length === 0 && searchQuery) return null
+  if (sorted.length === 0 && title !== 'My Documents') return null
+
+  const blankTile =
+    showLeadingBlank && canModify && viewMode === 'grid' ? (
+      <motion.button
+        key="blank-doc-tile"
+        type="button"
+        whileHover={{ scale: 0.98 }}
+        onClick={() => onCreateDoc()}
+        data-testid="blank-doc-tile"
+        className="flex aspect-[3/4] cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-el-line bg-el-surface/20 text-el-muted transition-all hover:border-el-accent hover:text-el-accent"
+      >
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-el-surface shadow-sm ring-1 ring-el-line">
+          <Plus className="h-5 w-5" strokeWidth={2.5} />
+        </div>
+        <span className="text-[10px] font-bold uppercase tracking-[0.15em]">Blank Doc</span>
+      </motion.button>
+    ) : null
+
+  return (
+    <section
+      className="mb-12"
+      data-testid={!showTitle ? (testId === 'my-docs-heading' ? undefined : testId) : undefined}
+    >
+      {showTitle && (
+        <h2
+          className="mb-6 flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-el-muted"
+          data-testid={testId}
+        >
+          {icon}
+          {title}
+          {sorted.length > 0 && (
+            <span className="text-[10px] font-semibold normal-case tracking-normal text-el-muted/80">
+              ({sorted.length})
+            </span>
+          )}
+        </h2>
+      )}
+      {sorted.length === 0 ? (
+        <div
+          data-testid="empty-state"
+          className="flex flex-col items-center justify-center py-12 text-el-muted"
+        >
+          <FileText className="mb-3 h-10 w-10 opacity-40" />
+          <p className="text-sm">
+            {canModify ? 'Create your first document to get started.' : 'No documents yet.'}
+          </p>
+        </div>
+      ) : viewMode === 'grid' ? (
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
+          {blankTile}
+          {sorted.map((share) => (
+            <DocCard key={share.data.ContentId} share={share} {...tileProps} />
+          ))}
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-el-line bg-el-surface shadow-sm">
+          <div className="flex items-center justify-between border-b border-el-line bg-black/[0.02] px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-el-muted dark:bg-white/[0.03]">
+            <div className="flex-1">Name</div>
+            <div className="hidden gap-10 md:flex">
+              <div className="w-28">Visibility</div>
+              <div className="w-24 text-right">Words</div>
+              <div className="w-32">Owner</div>
+              <div className="w-36 text-right">Last modified</div>
+              <div className="w-6" />
+            </div>
+          </div>
+          {sorted.map((share) => (
+            <DocRow key={share.data.ContentId} share={share} {...tileProps} />
+          ))}
+        </div>
+      )}
+    </section>
+  )
 }
 
 export interface DocumentListPageProps {
@@ -235,12 +792,6 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     }
     return out
   }, [documents, mySharesByContentId, user])
-
-  const filterBySearch = (shares: Share[]) => {
-    if (!searchQuery.trim()) return shares
-    const q = searchQuery.toLowerCase()
-    return shares.filter((s) => s.data.Title?.toLowerCase().includes(q))
-  }
 
   const privateDocs = useMemo(
     () => myShares.filter((s) => {
@@ -492,506 +1043,39 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
 
   const canModify = isOwnScope
 
-  // -------------------------------------------------------------------------
-  // Document metadata and actions
-  // -------------------------------------------------------------------------
-  function DocumentDescription({
-    visibility,
-    wordCount,
-    ownerLabel,
-    dateLabel,
-  }: {
-    visibility: DocumentFields['visibility']
-    wordCount: number
-    ownerLabel: string
-    dateLabel: string
-  }) {
-    const visibilityLabel = visibility === 'public' ? 'Public' : 'Private'
-
-    return (
-      <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] font-medium leading-4 tracking-tight text-el-muted">
-        <span className="inline-flex shrink-0 items-center gap-1">
-          {visibility === 'public' ? (
-            <Globe className="h-3 w-3 text-emerald-500" />
-          ) : (
-            <Lock className="h-3 w-3" />
-          )}
-          {visibilityLabel}
-        </span>
-        <span className="shrink-0 text-el-muted/70">&middot;</span>
-        <span className="min-w-0 truncate">{ownerLabel}</span>
-        <span className="shrink-0 text-el-muted/70">&middot;</span>
-        <span className="shrink-0 whitespace-nowrap">{dateLabel}</span>
-        <span className="shrink-0 text-el-muted/70">&middot;</span>
-        <span className="tabular-nums">{wordCount} words</span>
-      </div>
-    )
-  }
-
-  function SharedDocumentDescription({
-    ownerName,
-    wordCount,
-    dateLabel,
-    sourceApp,
-  }: {
-    ownerName: string
-    wordCount: number
-    dateLabel: string
-    sourceApp?: string
-  }) {
-    return (
-      <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] font-medium leading-4 tracking-tight text-el-muted">
-        <span className="inline-flex min-w-0 items-center gap-1 text-blue-500">
-          <Share2 className="h-3 w-3 shrink-0" />
-          <span className="truncate">{ownerName}</span>
-        </span>
-        <span className="shrink-0 text-el-muted/70">&middot;</span>
-        <span className="shrink-0 whitespace-nowrap">{dateLabel}</span>
-        <span className="shrink-0 text-el-muted/70">&middot;</span>
-        <span className="tabular-nums">{wordCount} words</span>
-        {sourceApp && (
-          <>
-            <span className="shrink-0 text-el-muted/70">&middot;</span>
-            <span className="capitalize">{sourceApp}</span>
-          </>
-        )}
-      </div>
-    )
-  }
-
-  function DocumentActionsMenu({
-    share,
-    visibility,
-    isFav,
-  }: {
-    share: Share
-    visibility: DocumentFields['visibility']
-    isFav: boolean
-  }) {
-    const contentId = share.data.ContentId
-    const doc = docLookup.get(contentId)
-    const currentF = doc?.data.folderId ?? ''
-
-    return (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            onClick={(e) => e.stopPropagation()}
-            data-testid={`doc-actions-btn-${contentId}`}
-            className="rounded-lg p-1.5 text-el-muted transition-colors hover:bg-el-bg hover:text-el-text data-[state=open]:bg-el-bg data-[state=open]:text-el-text"
-            title="Document actions"
-            aria-label={`Actions for ${share.data.Title}`}
-          >
-            <MoreVertical className="h-4 w-4" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="end"
-          className="min-w-[190px] border-el-line bg-el-surface text-el-text"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <DropdownMenuLabel className="px-2 py-1.5 text-[11px] text-el-muted">
-            Document actions
-          </DropdownMenuLabel>
-          <DropdownMenuItem
-            className="cursor-pointer"
-            onSelect={() => toggleFavoriteById(contentId)}
-            data-testid={`fav-btn-${contentId}`}
-          >
-            <Star className={`h-4 w-4 ${isFav ? 'fill-yellow-500 text-yellow-500' : ''}`} />
-            {isFav ? 'Remove favorite' : 'Add favorite'}
-          </DropdownMenuItem>
-          {canModify && (
-            <>
-              <DropdownMenuItem
-                className="cursor-pointer"
-                onSelect={() => void toggleShareVisibility(share)}
-                data-testid={`visibility-btn-${contentId}`}
-              >
-                {visibility === 'public' ? (
-                  <Globe className="h-4 w-4 text-emerald-500" />
-                ) : (
-                  <Lock className="h-4 w-4" />
-                )}
-                {visibility === 'public' ? 'Make private' : 'Make public'}
-              </DropdownMenuItem>
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger className="cursor-pointer">
-                  <Folder className="h-4 w-4" />
-                  Move to folder
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="min-w-[180px] border-el-line bg-el-surface text-el-text">
-                  <DropdownMenuItem
-                    className="cursor-pointer"
-                    disabled={currentF === ''}
-                    onSelect={() => void handleMoveDocToFolder(contentId, '')}
-                  >
-                    Uncategorized
-                  </DropdownMenuItem>
-                  {sortedFolders.map((f) => (
-                    <DropdownMenuItem
-                      key={f.recordId}
-                      className="cursor-pointer"
-                      disabled={currentF === f.recordId}
-                      onSelect={() => void handleMoveDocToFolder(contentId, f.recordId)}
-                    >
-                      {f.data.name}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-              <DropdownMenuItem
-                className="cursor-pointer"
-                onSelect={() => copyShareLink(share)}
-                data-testid={`copy-link-btn-${contentId}`}
-              >
-                {copiedId === contentId ? (
-                  <Check className="h-4 w-4 text-emerald-500" />
-                ) : (
-                  <Link2 className="h-4 w-4" />
-                )}
-                {copiedId === contentId ? 'Copied link' : 'Copy share link'}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                className="cursor-pointer"
-                onSelect={() => startRename(share)}
-                data-testid={`rename-doc-btn-${contentId}`}
-              >
-                <Pencil className="h-4 w-4" />
-                Rename
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="cursor-pointer text-red-600 focus:text-red-600"
-                onSelect={() => void deleteDocument(contentId)}
-                data-testid={`delete-doc-btn-${contentId}`}
-              >
-                <Trash2 className="h-4 w-4" />
-                Delete
-              </DropdownMenuItem>
-            </>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    )
-  }
-
-  // -------------------------------------------------------------------------
-  // Doc card (grid)
-  // -------------------------------------------------------------------------
-  function DocCard({ share }: { share: Share }) {
-    const doc = docLookup.get(share.data.ContentId)
-    const visibility = doc?.data.visibility ?? 'private'
-    const contentId = share.data.ContentId
-    const isFav = favorites.has(contentId)
-    const ownerLabel =
-      isOwnScope ? (user?.name ?? 'Me') : (share.data.OwnerName ?? 'User')
-    const dateLabel = share.data.LastEditedAt
-      ? new Date(share.data.LastEditedAt).toLocaleDateString(undefined, {
-          month: 'short',
-          day: 'numeric',
-          year: 'numeric',
-        })
-      : '—'
-
-    return (
-      <motion.div
-        data-testid={`doc-card-${contentId}`}
-        onClick={() => navigate(docPath(contentId))}
-        whileHover={{ y: -2 }}
-        className="animate-etheris-fade-in group cursor-pointer rounded-xl border border-el-line bg-el-surface p-4 shadow-sm transition-all hover:border-el-accent/35 hover:shadow-md"
-      >
-        <DocumentPreview docId={contentId} variant="grid" />
-
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            {renamingId === contentId ? (
-              <input
-                value={renameValue}
-                onChange={(e) => setRenameValue(e.target.value)}
-                onBlur={() => handleRename(contentId)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleRename(contentId)
-                  if (e.key === 'Escape') setRenamingId(null)
-                }}
-                onClick={(e) => e.stopPropagation()}
-                className="mb-0.5 w-full rounded-md border border-el-line bg-el-bg px-2 py-1 text-[13px] font-semibold text-el-text outline-none focus-visible:ring-2 focus-visible:ring-el-accent/30"
-                autoFocus
-                data-testid={`rename-input-${contentId}`}
-              />
-            ) : (
-            <h3 className="truncate text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
-                {share.data.Title}
-              </h3>
-            )}
-            <DocumentDescription
-              visibility={visibility}
-              wordCount={share.data.WordCount ?? 0}
-              ownerLabel={ownerLabel}
-              dateLabel={dateLabel}
-            />
-          </div>
-
-          {isOwnScope && renamingId !== contentId && (
-            <div className="shrink-0">
-              <DocumentActionsMenu share={share} visibility={visibility} isFav={isFav} />
-            </div>
-          )}
-        </div>
-      </motion.div>
-    )
-  }
-
-  // -------------------------------------------------------------------------
-  // Doc row (list)
-  // -------------------------------------------------------------------------
-  function DocRow({ share }: { share: Share }) {
-    const doc = docLookup.get(share.data.ContentId)
-    const visibility = doc?.data.visibility ?? 'private'
-    const contentId = share.data.ContentId
-    const isFav = favorites.has(contentId)
-    const ownerLabel =
-      isOwnScope ? (user?.name ?? 'Me') : (share.data.OwnerName ?? 'User')
-    const dateLabel = share.data.LastEditedAt
-      ? new Date(share.data.LastEditedAt).toLocaleDateString(undefined, {
-          month: 'short',
-          day: 'numeric',
-          year: 'numeric',
-        })
-      : '—'
-
-    return (
-      <motion.div
-        data-testid={`doc-card-${contentId}`}
-        onClick={() => navigate(docPath(contentId))}
-        initial={{ opacity: 0, y: 4 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="group flex cursor-pointer items-center justify-between gap-4 border-b border-el-line bg-el-surface px-4 py-3 transition-colors last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
-      >
-        <div className="flex min-w-0 flex-1 items-center gap-4">
-          <DocumentPreview docId={contentId} variant="list" />
-
-          <div className="min-w-0 flex-1">
-            <h4 className="line-clamp-2 text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
-              {share.data.Title}
-            </h4>
-            <div className="md:hidden">
-              <DocumentDescription
-                visibility={visibility}
-                wordCount={share.data.WordCount ?? 0}
-                ownerLabel={ownerLabel}
-                dateLabel={dateLabel}
-              />
-            </div>
-          </div>
-        </div>
-
-        <div className="hidden min-w-0 items-center gap-6 text-[12px] text-el-muted md:flex">
-          <div className="inline-flex w-24 items-center gap-1">
-            {visibility === 'public' ? (
-              <Globe className="h-3 w-3 shrink-0 text-emerald-500" />
-            ) : (
-              <Lock className="h-3 w-3 shrink-0" />
-            )}
-            <span className="truncate">{visibility === 'public' ? 'Public' : 'Private'}</span>
-          </div>
-          <div className="w-24 text-right tabular-nums">{share.data.WordCount ?? 0} words</div>
-          <div className="w-32 truncate">{ownerLabel}</div>
-          <div className="w-28 text-right">{dateLabel}</div>
-        </div>
-
-        {isOwnScope && <DocumentActionsMenu share={share} visibility={visibility} isFav={isFav} />}
-      </motion.div>
-    )
-  }
-
-  function SharedDocTile({ share }: { share: Share }) {
-    const contentId = share.data.ContentId
-    const dateLabel = share.data.LastEditedAt
-      ? new Date(share.data.LastEditedAt).toLocaleDateString(undefined, {
-          month: 'short',
-          day: 'numeric',
-          year: 'numeric',
-        })
-      : '—'
-    return (
-      <motion.div
-        data-testid={`shared-doc-card-${contentId}`}
-        whileHover={{ y: -2 }}
-        onClick={() => navigate(`/browse/${share.data.OwnerId}/doc/${contentId}`)}
-        className="animate-etheris-fade-in group cursor-pointer rounded-xl border border-el-line bg-el-surface p-4 shadow-sm transition-all hover:border-el-accent/35 hover:shadow-md"
-      >
-        <DocumentPreview docId={contentId} variant="grid" />
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <h3 className="truncate text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
-              {share.data.Title}
-            </h3>
-            <SharedDocumentDescription
-              ownerName={share.data.OwnerName}
-              wordCount={share.data.WordCount ?? 0}
-              dateLabel={dateLabel}
-              sourceApp={share.data.SourceApp}
-            />
-          </div>
-          <span
-            className={`shrink-0 rounded px-2 py-0.5 text-[10px] ${
-              share.data.Permission === 'edit'
-                ? 'bg-blue-500/10 text-blue-500'
-                : 'bg-el-bg text-el-muted'
-            }`}
-          >
-            {share.data.Permission === 'edit' ? 'Can edit' : 'View only'}
-          </span>
-        </div>
-      </motion.div>
-    )
-  }
-
-  function SharedDocListRow({ share }: { share: Share }) {
-    const contentId = share.data.ContentId
-    const dateLabel = share.data.LastEditedAt
-      ? new Date(share.data.LastEditedAt).toLocaleDateString(undefined, {
-          month: 'short',
-          day: 'numeric',
-          year: 'numeric',
-        })
-      : '—'
-    return (
-      <motion.div
-        data-testid={`shared-doc-card-${contentId}`}
-        initial={{ opacity: 0, y: 4 }}
-        animate={{ opacity: 1, y: 0 }}
-        onClick={() => navigate(`/browse/${share.data.OwnerId}/doc/${contentId}`)}
-        className="group flex cursor-pointer items-center justify-between gap-4 border-b border-el-line bg-el-surface px-4 py-3 transition-colors last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
-      >
-        <div className="flex min-w-0 flex-1 items-center gap-4">
-          <DocumentPreview docId={contentId} variant="list" />
-          <div className="min-w-0 flex-1">
-            <h4 className="line-clamp-2 text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
-              {share.data.Title}
-            </h4>
-            <div className="md:hidden">
-              <SharedDocumentDescription
-                ownerName={share.data.OwnerName}
-                wordCount={share.data.WordCount ?? 0}
-                dateLabel={dateLabel}
-                sourceApp={share.data.SourceApp}
-              />
-            </div>
-          </div>
-        </div>
-        <div className="hidden min-w-0 items-center gap-6 text-[12px] text-el-muted md:flex">
-          <div className="w-32 truncate">{share.data.OwnerName}</div>
-          <div className="w-24 text-right tabular-nums">{share.data.WordCount ?? 0} words</div>
-          <div className="w-28 text-right">{dateLabel}</div>
-          {share.data.SourceApp && (
-            <div className="w-20 truncate capitalize">{share.data.SourceApp}</div>
-          )}
-        </div>
-        <span
-          className={`shrink-0 rounded px-2 py-0.5 text-[10px] ${
-            share.data.Permission === 'edit'
-              ? 'bg-blue-500/10 text-blue-500'
-              : 'bg-el-bg text-el-muted'
-          }`}
-        >
-          {share.data.Permission === 'edit' ? 'Can edit' : 'View only'}
-        </span>
-      </motion.div>
-    )
-  }
-
-  // -------------------------------------------------------------------------
-  // Section renderer
-  // -------------------------------------------------------------------------
-  function DocSection({ title, icon, shares, testId, showLeadingBlank, showTitle = true }: {
-    title: string
-    icon?: React.ReactNode
-    shares: Share[]
-    testId: string
-    /** Etheris-style dashed “blank doc” tile (grid only). */
-    showLeadingBlank?: boolean
-    /** When false, the h2 is omitted (toolbar already shows the same label). */
-    showTitle?: boolean
-  }) {
-    const filtered = filterBySearch(shares)
-    const sorted = sortShares(filtered, sortBy)
-
-    if (sorted.length === 0 && searchQuery) return null
-    if (sorted.length === 0 && title !== 'My Documents') return null
-
-    const blankTile =
-      showLeadingBlank && canModify && viewMode === 'grid' ? (
-        <motion.button
-          key="blank-doc-tile"
-          type="button"
-          whileHover={{ scale: 0.98 }}
-          onClick={() => handleCreate()}
-          data-testid="blank-doc-tile"
-          className="flex aspect-[3/4] cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-el-line bg-el-surface/20 text-el-muted transition-all hover:border-el-accent hover:text-el-accent"
-        >
-          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-el-surface shadow-sm ring-1 ring-el-line">
-            <Plus className="h-5 w-5" strokeWidth={2.5} />
-          </div>
-          <span className="text-[10px] font-bold uppercase tracking-[0.15em]">Blank Doc</span>
-        </motion.button>
-      ) : null
-
-    return (
-      <section
-        className="mb-12"
-        data-testid={!showTitle ? (testId === 'my-docs-heading' ? undefined : testId) : undefined}
-      >
-        {showTitle && (
-        <h2
-          className="mb-6 flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-el-muted"
-          data-testid={testId}
-        >
-          {icon}
-          {title}
-          {sorted.length > 0 && (
-            <span className="text-[10px] font-semibold normal-case tracking-normal text-el-muted/80">
-              ({sorted.length})
-            </span>
-          )}
-        </h2>
-        )}
-        {sorted.length === 0 ? (
-          <div
-            data-testid="empty-state"
-            className="flex flex-col items-center justify-center py-12 text-el-muted"
-          >
-            <FileText className="mb-3 h-10 w-10 opacity-40" />
-            <p className="text-sm">
-              {canModify
-                ? 'Create your first document to get started.'
-                : 'No documents yet.'}
-            </p>
-          </div>
-        ) : viewMode === 'grid' ? (
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
-            {blankTile}
-            {sorted.map((share) => <DocCard key={share.data.ContentId} share={share} />)}
-          </div>
-        ) : (
-          <div className="overflow-hidden rounded-xl border border-el-line bg-el-surface shadow-sm">
-            <div className="flex items-center justify-between border-b border-el-line bg-black/[0.02] px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-el-muted dark:bg-white/[0.03]">
-              <div className="flex-1">Name</div>
-              <div className="hidden gap-10 md:flex">
-                <div className="w-28">Visibility</div>
-                <div className="w-24 text-right">Words</div>
-                <div className="w-32">Owner</div>
-                <div className="w-36 text-right">Last modified</div>
-                <div className="w-6" />
-              </div>
-            </div>
-            {sorted.map((share) => <DocRow key={share.data.ContentId} share={share} />)}
-          </div>
-        )}
-      </section>
-    )
+  const ownDocTileProps: OwnDocTileSharedProps = {
+    docLookup,
+    favorites,
+    isOwnScope: true,
+    userName: user?.name,
+    onOpenDoc: (contentId) => navigate(docPath(contentId)),
+    renamingId,
+    renameValue,
+    setRenameValue,
+    handleRename,
+    setRenamingId,
+    renderActions: (s) => {
+      const docRec = docLookup.get(s.data.ContentId)
+      const visibility = docRec?.data.visibility ?? 'private'
+      const isFav = favorites.has(s.data.ContentId)
+      return (
+        <DocumentActionsMenu
+          share={s}
+          visibility={visibility}
+          isFav={isFav}
+          docLookup={docLookup}
+          sortedFolders={sortedFolders}
+          canModify={canModify}
+          copiedId={copiedId}
+          toggleFavoriteById={toggleFavoriteById}
+          toggleShareVisibility={toggleShareVisibility}
+          handleMoveDocToFolder={handleMoveDocToFolder}
+          copyShareLink={copyShareLink}
+          startRename={startRename}
+          deleteDocument={deleteDocument}
+        />
+      )
+    },
   }
 
   function ProfileMenu() {
@@ -1256,7 +1340,20 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
   // Browse mode
   // -------------------------------------------------------------------------
   if (!isOwnScope) {
-    const filtered = filterBySearch(browseDocs)
+    const browseTileProps: OwnDocTileSharedProps = {
+      docLookup,
+      favorites,
+      isOwnScope: false,
+      userName: undefined,
+      onOpenDoc: (contentId) => navigate(docPath(contentId)),
+      renamingId: null,
+      renameValue: '',
+      setRenameValue: () => {},
+      handleRename: () => {},
+      setRenamingId: () => {},
+      renderActions: undefined,
+    }
+    const filtered = filterSharesBySearch(browseDocs, searchQuery)
     const sorted = sortShares(filtered, sortBy)
     return (
       <div
@@ -1303,7 +1400,7 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
               className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5"
             >
               {sorted.map((share) => (
-                <DocCard key={share.data.ContentId} share={share} />
+                <DocCard key={share.data.ContentId} share={share} {...browseTileProps} />
               ))}
             </div>
           ) : (
@@ -1322,7 +1419,7 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
                 </div>
               </div>
               {sorted.map((share) => (
-                <DocRow key={share.data.ContentId} share={share} />
+                <DocRow key={share.data.ContentId} share={share} {...browseTileProps} />
               ))}
             </div>
           )}
@@ -1388,6 +1485,12 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
                 shares={filteredFavoriteDocs}
                 testId="favorites-heading"
                 showTitle={false}
+                searchQuery={searchQuery}
+                sortBy={sortBy}
+                viewMode={viewMode}
+                canModify={canModify}
+                onCreateDoc={handleCreate}
+                tileProps={ownDocTileProps}
               />
             ) : (
               <>
@@ -1397,6 +1500,12 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
                     icon={<Star className="h-4 w-4 fill-yellow-500 text-yellow-500" />}
                     shares={filteredFavoriteDocs}
                     testId="favorites-heading"
+                    searchQuery={searchQuery}
+                    sortBy={sortBy}
+                    viewMode={viewMode}
+                    canModify={canModify}
+                    onCreateDoc={handleCreate}
+                    tileProps={ownDocTileProps}
                   />
                 )}
 
@@ -1406,6 +1515,12 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
                   testId="my-docs-heading"
                   showLeadingBlank={leadingBlankForNav}
                   showTitle={libraryNav.kind === 'uncategorized' || libraryNav.kind === 'folder'}
+                  searchQuery={searchQuery}
+                  sortBy={sortBy}
+                  viewMode={viewMode}
+                  canModify={canModify}
+                  onCreateDoc={handleCreate}
+                  tileProps={ownDocTileProps}
                 />
 
                 <DocSection
@@ -1413,6 +1528,12 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
                   icon={<Globe className="h-4 w-4 text-emerald-500" />}
                   shares={filteredPublicDocs}
                   testId="published-docs-heading"
+                  searchQuery={searchQuery}
+                  sortBy={sortBy}
+                  viewMode={viewMode}
+                  canModify={canModify}
+                  onCreateDoc={handleCreate}
+                  tileProps={ownDocTileProps}
                 />
               </>
             )}
@@ -1433,7 +1554,11 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
                 className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5"
               >
                 {sharedWithMe.map((share) => (
-                  <SharedDocTile key={share.recordId} share={share} />
+                  <SharedDocTile
+                    key={share.recordId}
+                    share={share}
+                    onOpen={(s) => navigate(`/browse/${s.data.OwnerId}/doc/${s.data.ContentId}`)}
+                  />
                 ))}
               </div>
             ) : (
@@ -1452,7 +1577,11 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
                   </div>
                 </div>
                 {sharedWithMe.map((share) => (
-                  <SharedDocListRow key={share.recordId} share={share} />
+                  <SharedDocListRow
+                    key={share.recordId}
+                    share={share}
+                    onOpen={(s) => navigate(`/browse/${s.data.OwnerId}/doc/${s.data.ContentId}`)}
+                  />
                 ))}
               </div>
             )}
