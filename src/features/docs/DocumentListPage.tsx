@@ -668,6 +668,66 @@ function DocSection({
   )
 }
 
+// Toolbar must stay at module scope. Defining it inside DocumentListPage creates a new
+// component type every render, so React remounts the search input on each keystroke
+// and focus is lost after one character.
+type LibrarySearchToolbarRowProps = {
+  searchQuery: string
+  onSearchQueryChange: (next: string) => void
+  includeDocActions: boolean
+  canModify: boolean
+  onOpenTemplates: () => void
+  onCreateDoc: () => void
+}
+
+function LibrarySearchToolbarRow({
+  searchQuery,
+  onSearchQueryChange,
+  includeDocActions,
+  canModify,
+  onOpenTemplates,
+  onCreateDoc,
+}: LibrarySearchToolbarRowProps) {
+  return (
+    <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:gap-3 sm:justify-between">
+      <div className="relative min-w-0 max-w-md flex-1">
+        <SearchInput
+          value={searchQuery}
+          onChange={(e) => onSearchQueryChange(e.target.value)}
+          onClear={() => onSearchQueryChange('')}
+          placeholder="Search your library..."
+          data-testid="doc-search"
+          className="h-auto w-full rounded-lg border-el-line bg-el-surface py-2 pl-10 pr-10 text-[13px] text-el-text shadow-sm placeholder:text-el-muted/60 focus-visible:ring-2 focus-visible:ring-el-accent/20"
+        />
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-3 sm:ml-auto">
+        {includeDocActions && canModify && (
+          <>
+            <button
+              type="button"
+              onClick={onOpenTemplates}
+              data-testid="templates-btn"
+              className="flex h-9 items-center gap-2 rounded-lg border border-el-line bg-el-surface px-4 text-[12px] font-semibold text-el-text shadow-sm transition-colors hover:bg-el-bg"
+            >
+              <FileDown className="h-4 w-4" />
+              Templates
+            </button>
+            <button
+              type="button"
+              onClick={onCreateDoc}
+              data-testid="create-doc-btn"
+              className="flex h-9 items-center gap-2 rounded-lg bg-el-accent px-4 text-[12px] font-bold text-white shadow-sm transition-opacity hover:opacity-90"
+            >
+              <Plus className="h-4 w-4" strokeWidth={2.5} />
+              New Document
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export interface DocumentListPageProps {
   /** If provided, show another user's public docs instead of the caller's own. */
   browseUserId?: string
@@ -1139,47 +1199,6 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     )
   }
 
-  function SearchToolbarRow({ includeDocActions }: { includeDocActions: boolean }) {
-    return (
-      <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:gap-3 sm:justify-between">
-        <div className="relative min-w-0 max-w-md flex-1">
-          <SearchInput
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onClear={() => setSearchQuery('')}
-            placeholder="Search your library..."
-            data-testid="doc-search"
-            className="h-auto w-full rounded-lg border-el-line bg-el-surface py-2 pl-10 pr-4 text-[13px] text-el-text shadow-sm placeholder:text-el-muted/60 focus-visible:ring-2 focus-visible:ring-el-accent/20"
-          />
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-3 sm:ml-auto">
-          {includeDocActions && canModify && (
-            <>
-              <button
-                type="button"
-                onClick={() => setShowTemplates(true)}
-                data-testid="templates-btn"
-                className="flex h-9 items-center gap-2 rounded-lg border border-el-line bg-el-surface px-4 text-[12px] font-semibold text-el-text shadow-sm transition-colors hover:bg-el-bg"
-              >
-                <FileDown className="h-4 w-4" />
-                Templates
-              </button>
-              <button
-                type="button"
-                onClick={() => handleCreate()}
-                data-testid="create-doc-btn"
-                className="flex h-9 items-center gap-2 rounded-lg bg-el-accent px-4 text-[12px] font-bold text-white shadow-sm transition-opacity hover:opacity-90"
-              >
-                <Plus className="h-4 w-4" strokeWidth={2.5} />
-                New Document
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-    )
-  }
-
   function FolderShortcutRow() {
     if (!canModify) return null
 
@@ -1386,7 +1405,14 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
           </header>
 
           <div>
-            <SearchToolbarRow includeDocActions={false} />
+            <LibrarySearchToolbarRow
+              searchQuery={searchQuery}
+              onSearchQueryChange={setSearchQuery}
+              includeDocActions={false}
+              canModify={false}
+              onOpenTemplates={() => setShowTemplates(true)}
+              onCreateDoc={() => void handleCreate()}
+            />
           </div>
 
           <LibraryControlsRow />
@@ -1487,7 +1513,14 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
             {myShares.length} {myShares.length === 1 ? 'document' : 'documents'} in your workspace.
           </p>
           <div className="mb-8 w-full min-w-0">
-            <SearchToolbarRow includeDocActions />
+            <LibrarySearchToolbarRow
+              searchQuery={searchQuery}
+              onSearchQueryChange={setSearchQuery}
+              includeDocActions
+              canModify={canModify}
+              onOpenTemplates={() => setShowTemplates(true)}
+              onCreateDoc={() => void handleCreate()}
+            />
           </div>
           <div className="mb-10">
             <FolderShortcutRow />

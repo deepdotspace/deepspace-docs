@@ -10,7 +10,6 @@ import {
   FolderPlus,
   LayoutGrid,
   PanelLeftClose,
-  PanelLeftOpen,
   Star,
   Trash2,
 } from 'lucide-react'
@@ -53,22 +52,30 @@ function NavRow({
   collapsed?: boolean
 }) {
   return (
-    <div className="group flex w-full items-center gap-0.5">
+    <div className="group flex w-full min-w-0 items-center gap-0.5">
       <button
         type="button"
         data-testid={testId}
         onClick={onClick}
         title={collapsed ? label : undefined}
-        className={`relative flex h-9 min-w-0 flex-1 items-center rounded-md px-0 text-left text-[13px] transition-colors ${
+        className={`flex h-9 min-w-0 flex-1 items-center gap-0 rounded-md pl-0.5 pr-0 text-left text-[13px] ${
           active
             ? 'bg-el-accent font-medium text-white shadow-sm'
-            : 'text-el-text/80 hover:bg-black/[0.04] hover:text-el-text dark:hover:bg-white/[0.06]'
+            : 'text-el-text/80 transition-colors hover:bg-black/[0.04] hover:text-el-text dark:hover:bg-white/[0.06]'
         }`}
       >
-        <span className="absolute left-4 flex h-4 w-4 items-center justify-center">
-          <Icon size={14} strokeWidth={active ? 2.5 : 1.8} />
+        <span className="flex h-9 w-10 shrink-0 items-center justify-center" aria-hidden>
+          <Icon size={14} strokeWidth={active ? 2.5 : 1.8} className="shrink-0" />
         </span>
-        {!collapsed && <span className="min-w-0 truncate pl-12 pr-2">{label}</span>}
+        <span
+          className={
+            collapsed
+              ? 'sr-only'
+              : 'min-w-0 flex-1 truncate pr-2'
+          }
+        >
+          {label}
+        </span>
       </button>
       {!collapsed && trailing}
     </div>
@@ -116,17 +123,34 @@ export function LibrarySidebar({
   return (
     <aside
       data-testid="library-sidebar"
-      className={`relative z-20 shrink-0 border-r border-el-line bg-el-surface/90 backdrop-blur-xl transition-[width] duration-200 ease-out dark:bg-el-surface/95 ${
+      className={`relative z-20 box-border shrink-0 overflow-x-clip border-r border-el-line bg-el-surface/90 backdrop-blur-xl transition-[width] duration-200 ease-out will-change-[width] dark:bg-el-surface/95 ${
         collapsed ? 'w-16' : 'w-64'
       }`}
     >
       <div className="flex h-full min-h-0 flex-col">
         <div
-          className={`flex items-center border-b border-el-line py-4 ${
-            collapsed ? 'justify-center px-2' : 'justify-between gap-2 px-4'
+          className={`relative flex min-h-14 w-full min-w-0 items-center overflow-hidden border-b border-el-line py-3 pl-3.5 ${
+            collapsed ? 'pr-2.5' : 'pr-12'
           }`}
         >
-          {!collapsed && (
+          <div
+            className={`flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden ${
+              collapsed
+                ? 'pointer-events-none select-none opacity-0'
+                : ''
+            }`}
+            aria-hidden={collapsed}
+          >
+            <div
+              className="flex h-8 w-9 shrink-0 items-center justify-center"
+              aria-hidden
+            >
+              <FileText
+                className="text-blue-600 dark:text-blue-400"
+                size={26}
+                strokeWidth={2}
+              />
+            </div>
             <div className="min-w-0">
               <span className="block truncate text-base font-bold leading-tight tracking-tight text-el-text">
                 Documents
@@ -135,19 +159,23 @@ export function LibrarySidebar({
                 Workspace
               </span>
             </div>
-          )}
+          </div>
           <button
             type="button"
             data-testid="library-sidebar-collapse"
             onClick={onToggleCollapsed}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-el-muted transition-colors hover:bg-el-bg hover:text-el-text"
+            className="absolute right-2.5 top-1/2 z-10 flex h-8 w-9 -translate-y-1/2 items-center justify-center rounded-md text-el-muted transition-colors hover:bg-el-bg hover:text-el-text"
             title={collapsed ? 'Show sidebar' : 'Hide sidebar'}
+            aria-expanded={!collapsed}
           >
-            {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+            <PanelLeftClose
+              className="h-4 w-4"
+              style={{ transform: collapsed ? 'scaleX(-1)' : undefined }}
+            />
           </button>
         </div>
 
-        <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-4">
+        <nav className="flex-1 space-y-0.5 overflow-y-auto py-4 pl-3.5 pr-1.5">
           <NavRow
             active={selection.kind === 'all'}
             icon={LayoutGrid}
@@ -173,12 +201,17 @@ export function LibrarySidebar({
             collapsed={collapsed}
           />
 
-          <div className={collapsed ? 'mt-6 border-t border-el-line pt-3' : 'mt-8'}>
-            {!collapsed && (
-              <span className="mb-2 block px-3 text-[10px] font-bold uppercase tracking-widest text-el-muted/80">
-                Folders
-              </span>
-            )}
+          <div className="mt-8 border-t border-el-line pt-3">
+            <span
+              className={`mb-2 block pl-2.5 pr-0 text-[10px] font-bold uppercase tracking-widest text-el-muted/80 ${
+                collapsed
+                  ? 'pointer-events-none select-none opacity-0'
+                  : ''
+              }`}
+              aria-hidden={collapsed}
+            >
+              Folders
+            </span>
             <div className="space-y-0.5">
               {sortedFolders.map((f) => (
                 <NavRow
@@ -209,7 +242,7 @@ export function LibrarySidebar({
               ))}
 
               {addingFolder ? (
-                <div className={collapsed ? 'px-0 py-1' : 'px-3 py-1'}>
+                <div className="py-1">
                   <input
                     autoFocus
                     value={newFolderName}
@@ -240,12 +273,20 @@ export function LibrarySidebar({
                     if (name) void onCreateFolder(name)
                   }}
                   title={collapsed ? 'New folder' : undefined}
-                  className="relative flex h-9 w-full items-center rounded-md px-0 text-left text-[13px] text-el-muted transition-colors hover:bg-black/[0.04] hover:text-el-accent dark:hover:bg-white/[0.06]"
+                  className="flex h-9 w-full min-w-0 items-center gap-0 rounded-md pl-0.5 pr-0 text-left text-[13px] text-el-muted transition-colors hover:bg-black/[0.04] hover:text-el-accent dark:hover:bg-white/[0.06]"
                 >
-                  <span className="absolute left-4 flex h-4 w-4 items-center justify-center">
-                    <FolderPlus className="h-3.5 w-3.5" />
+                  <span className="flex h-9 w-10 shrink-0 items-center justify-center" aria-hidden>
+                    <FolderPlus className="h-3.5 w-3.5 shrink-0" />
                   </span>
-                  {!collapsed && <span className="min-w-0 truncate pl-12 pr-2">New folder</span>}
+                  <span
+                    className={
+                      collapsed
+                        ? 'sr-only'
+                        : 'min-w-0 flex-1 truncate pr-2'
+                    }
+                  >
+                    New folder
+                  </span>
                 </button>
               )}
             </div>

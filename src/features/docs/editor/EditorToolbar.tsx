@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useState } from 'react'
-import type { Editor } from '@tiptap/react'
+import { useEditorState, type Editor } from '@tiptap/react'
 import {
   Undo2,
   Redo2,
@@ -393,59 +393,82 @@ function ColorPickerButton({
 }
 
 // ---------------------------------------------------------------------------
-// Font Size Dropdown
+// Font Size Dropdown (numeric pt scale, Google Docs–style)
 // ---------------------------------------------------------------------------
 
-const FONT_SIZES = [
-  { label: 'Small', value: '13px' },
-  { label: 'Normal', value: '' },
-  { label: 'Large', value: '18px' },
-  { label: 'Huge', value: '24px' },
-]
+/** Matches `.tiptap.doc-editor-page { font-size: 11pt }` — used when no inline size is set. */
+const DEFAULT_BODY_FONT_PT = 11
+
+/** Common preset sizes (pt), similar to Google Docs. */
+const FONT_SIZE_PT_PRESETS = [
+  8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72,
+] as const
+
+/** Convert stored CSS font-size (e.g. from Tiptap textStyle) to pt for display / menu match. */
+function fontSizeCssToPt(css: string | undefined | null): number | null {
+  if (css == null || !String(css).trim()) return null
+  const s = String(css).trim().toLowerCase()
+  const m = s.match(/^([\d.]+)\s*(pt|px)?$/)
+  if (!m) return null
+  const n = parseFloat(m[1])
+  if (Number.isNaN(n)) return null
+  const unit = m[2] ?? 'pt'
+  if (unit === 'pt') return n
+  if (unit === 'px') return (n * 72) / 96
+  return null
+}
 
 function FontSizeDropdown({ editor }: { editor: Editor }) {
   const [open, setOpen] = useState(false)
-  const currentSize = editor.getAttributes('textStyle').fontSize ?? ''
-  const currentLabel = FONT_SIZES.find((s) => s.value === currentSize)?.label ?? 'Normal'
+  const fontSizeRaw = useEditorState({
+    editor,
+    selector: (snap) => (snap.editor.getAttributes('textStyle').fontSize as string | undefined) ?? '',
+  })
+  const explicitPt = fontSizeCssToPt(fontSizeRaw)
+  const displayPt =
+    explicitPt != null ? Math.round(explicitPt) : DEFAULT_BODY_FONT_PT
+  const isInherit = explicitPt == null
 
   return (
     <div className="relative">
       <button
         type="button"
         data-testid="toolbar-font-size"
+        title={isInherit ? `Inherits paragraph size (body default ${DEFAULT_BODY_FONT_PT} pt)` : undefined}
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 px-2 py-1 rounded text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors min-w-[60px]"
+        className="flex items-center gap-1 px-2 py-1 rounded text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors min-w-[3rem] tabular-nums"
       >
-        {currentLabel}
-        <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor">
+        {displayPt}
+        <svg className="w-3 h-3 shrink-0" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
           <path d="M3 5l3 3 3-3" />
         </svg>
       </button>
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg py-1 min-w-[120px]">
-            {FONT_SIZES.map(({ label, value }) => (
-              <button
-                key={label}
-                type="button"
-                data-testid={`toolbar-fontsize-${label.toLowerCase()}`}
-                onClick={() => {
-                  if (!value) {
-                    editor.chain().focus().unsetFontSize().run()
-                  } else {
-                    editor.chain().focus().setFontSize(value).run()
-                  }
-                  setOpen(false)
-                }}
-                className={`w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors ${
-                  currentLabel === label ? 'text-primary font-medium' : 'text-popover-foreground'
-                }`}
-                style={{ fontSize: value || undefined }}
-              >
-                {label}
-              </button>
-            ))}
+          <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg py-1 min-w-[7rem] max-h-[min(320px,70vh)] overflow-y-auto">
+            {FONT_SIZE_PT_PRESETS.map((pt) => {
+              const selected =
+                !isInherit &&
+                explicitPt != null &&
+                Math.round(explicitPt) === pt
+              return (
+                <button
+                  key={pt}
+                  type="button"
+                  data-testid={`toolbar-fontsize-${pt}`}
+                  onClick={() => {
+                    editor.chain().focus().setFontSize(`${pt}pt`).run()
+                    setOpen(false)
+                  }}
+                  className={`w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors tabular-nums ${
+                    selected ? 'text-primary font-medium' : 'text-popover-foreground'
+                  }`}
+                >
+                  {pt}
+                </button>
+              )
+            })}
           </div>
         </>
       )}

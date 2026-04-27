@@ -209,6 +209,7 @@ export default function DocumentEditorPage() {
 
   const { records: allShares, status: sharesQueryStatus } = useQuery<ContentShareFields>('content_shares')
   const { put: putShare } = useMutations<ContentShareFields>('content_shares')
+  const { put: putDocRecord } = useMutations<DocumentFields>('documents')
 
   const docShares = useMemo(
     () => (allShares ?? []).filter((s) => s.data.ContentId === docId),
@@ -219,7 +220,13 @@ export default function DocumentEditorPage() {
     (documentsQueryStatus === 'ready' || documentsQueryStatus === 'error') &&
     (sharesQueryStatus === 'ready' || sharesQueryStatus === 'error')
   const selfShare = docShares.find((s) => s.data.ShareType === 'self') ?? docShares[0]
-  const docTitle = selfShare?.data.Title ?? 'Document'
+  const docTitle = useMemo(() => {
+    const fromShare = selfShare?.data.Title?.trim()
+    const fromRecord = doc?.data.title?.trim()
+    if (fromShare) return fromShare
+    if (fromRecord) return fromRecord
+    return 'Untitled Document'
+  }, [selfShare, doc])
 
   // Yjs connection — YjsRoom DO. We rely on the Y.Doc directly and let
   // Tiptap's Collaboration extension handle XML fragment sync. The `text`
@@ -347,6 +354,9 @@ export default function DocumentEditorPage() {
 
   const handleTitleSave = useCallback(
     async (newTitle: string) => {
+      if (doc) {
+        void putDocRecord(doc.recordId, { ...doc.data, title: newTitle }).catch(() => {})
+      }
       for (const share of docShares) {
         putShare(share.recordId, {
           ...share.data,
@@ -354,7 +364,7 @@ export default function DocumentEditorPage() {
         }).catch(() => {})
       }
     },
-    [docShares, putShare],
+    [doc, docShares, putDocRecord, putShare],
   )
 
   // Share-link visitors never get the owner’s `documents` row; access is via `content_shares`.
