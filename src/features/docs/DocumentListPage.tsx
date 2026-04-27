@@ -8,7 +8,7 @@
  *   <DocumentListPage />                      // own docs
  *   <DocumentListPage browseUserId="..." />   // another user's public docs
  *
- * Metadata (title, wordCount, lastEditedAt) lives on `content_shares`
+ * Metadata (title, last edited, share fields, etc.) lives on `content_shares`
  * (workspace:default DO). The `documents` record holds content (title),
  * ownerId, and visibility. Rich content is stored in a per-doc YjsRoom
  * DO — see `DocumentEditorPage`.
@@ -128,19 +128,17 @@ function formatShareDate(share: Share): string {
 
 function DocumentDescription({
   visibility,
-  wordCount,
   ownerLabel,
   dateLabel,
 }: {
   visibility: DocumentFields['visibility']
-  wordCount: number
   ownerLabel: string
   dateLabel: string
 }) {
   const visibilityLabel = visibility === 'public' ? 'Public' : 'Private'
 
   return (
-    <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] font-medium leading-4 tracking-tight text-el-muted">
+    <div className="mt-0.5 flex w-full min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] font-medium leading-4 tracking-tight text-el-muted">
       <span className="inline-flex shrink-0 items-center gap-1">
         {visibility === 'public' ? (
           <Globe className="h-3 w-3 text-emerald-500" />
@@ -150,40 +148,35 @@ function DocumentDescription({
         {visibilityLabel}
       </span>
       <span className="shrink-0 text-el-muted/70">&middot;</span>
-      <span className="min-w-0 truncate">{ownerLabel}</span>
-      <span className="shrink-0 text-el-muted/70">&middot;</span>
       <span className="shrink-0 whitespace-nowrap">{dateLabel}</span>
       <span className="shrink-0 text-el-muted/70">&middot;</span>
-      <span className="tabular-nums">{wordCount} words</span>
+      <span className="min-w-0 max-w-full truncate">{ownerLabel}</span>
     </div>
   )
 }
 
 function SharedDocumentDescription({
   ownerName,
-  wordCount,
   dateLabel,
   sourceApp,
 }: {
   ownerName: string
-  wordCount: number
   dateLabel: string
   sourceApp?: string
 }) {
   return (
-    <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] font-medium leading-4 tracking-tight text-el-muted">
-      <span className="inline-flex min-w-0 items-center gap-1 text-blue-500">
-        <Share2 className="h-3 w-3 shrink-0" />
-        <span className="truncate">{ownerName}</span>
+    <div className="mt-0.5 flex w-full min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] font-medium leading-4 tracking-tight text-el-muted">
+      <span className="inline-flex shrink-0 items-center text-blue-500">
+        <Share2 className="h-3 w-3" />
       </span>
       <span className="shrink-0 text-el-muted/70">&middot;</span>
       <span className="shrink-0 whitespace-nowrap">{dateLabel}</span>
       <span className="shrink-0 text-el-muted/70">&middot;</span>
-      <span className="tabular-nums">{wordCount} words</span>
+      <span className="min-w-0 max-w-full truncate text-blue-500">{ownerName}</span>
       {sourceApp && (
         <>
           <span className="shrink-0 text-el-muted/70">&middot;</span>
-          <span className="capitalize">{sourceApp}</span>
+          <span className="shrink-0 capitalize">{sourceApp}</span>
         </>
       )}
     </div>
@@ -201,7 +194,7 @@ type DocumentActionsMenuProps = {
   toggleFavoriteById: (contentId: string) => void
   toggleShareVisibility: (share: Share) => void | Promise<void>
   handleMoveDocToFolder: (contentId: string, folderId: string) => void | Promise<void>
-  copyShareLink: (share: Share) => void
+  copyShareLink: (share: Share) => void | Promise<void>
   startRename: (share: Share) => void
   deleteDocument: (contentId: string) => void | Promise<void>
 }
@@ -296,7 +289,7 @@ function DocumentActionsMenu({
             </DropdownMenuSub>
             <DropdownMenuItem
               className="cursor-pointer"
-              onSelect={() => copyShareLink(share)}
+              onSelect={() => void copyShareLink(share)}
               data-testid={`copy-link-btn-${contentId}`}
             >
               {copiedId === contentId ? (
@@ -304,7 +297,11 @@ function DocumentActionsMenu({
               ) : (
                 <Link2 className="h-4 w-4" />
               )}
-              {copiedId === contentId ? 'Copied link' : 'Copy share link'}
+              {copiedId === contentId
+                ? 'Copied link'
+                : visibility === 'public'
+                  ? 'Copy share link'
+                  : 'Publish and copy link'}
             </DropdownMenuItem>
             <DropdownMenuItem
               className="cursor-pointer"
@@ -395,7 +392,6 @@ function DocCard({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
           )}
           <DocumentDescription
             visibility={visibility}
-            wordCount={share.data.WordCount ?? 0}
             ownerLabel={ownerLabel}
             dateLabel={dateLabel}
           />
@@ -446,7 +442,6 @@ function DocRow({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
           <div className="md:hidden">
             <DocumentDescription
               visibility={visibility}
-              wordCount={share.data.WordCount ?? 0}
               ownerLabel={ownerLabel}
               dateLabel={dateLabel}
             />
@@ -463,7 +458,6 @@ function DocRow({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
           )}
           <span className="truncate">{visibility === 'public' ? 'Public' : 'Private'}</span>
         </div>
-        <div className="w-24 text-right tabular-nums">{share.data.WordCount ?? 0} words</div>
         <div className="w-32 truncate">{ownerLabel}</div>
         <div className="w-28 text-right">{dateLabel}</div>
       </div>
@@ -491,7 +485,6 @@ function SharedDocTile({ share, onOpen }: { share: Share; onOpen: (share: Share)
           </h3>
           <SharedDocumentDescription
             ownerName={share.data.OwnerName}
-            wordCount={share.data.WordCount ?? 0}
             dateLabel={dateLabel}
             sourceApp={share.data.SourceApp}
           />
@@ -530,7 +523,6 @@ function SharedDocListRow({ share, onOpen }: { share: Share; onOpen: (share: Sha
           <div className="md:hidden">
             <SharedDocumentDescription
               ownerName={share.data.OwnerName}
-              wordCount={share.data.WordCount ?? 0}
               dateLabel={dateLabel}
               sourceApp={share.data.SourceApp}
             />
@@ -539,7 +531,6 @@ function SharedDocListRow({ share, onOpen }: { share: Share; onOpen: (share: Sha
       </div>
       <div className="hidden min-w-0 items-center gap-6 text-[12px] text-el-muted md:flex">
         <div className="w-32 truncate">{share.data.OwnerName}</div>
-        <div className="w-24 text-right tabular-nums">{share.data.WordCount ?? 0} words</div>
         <div className="w-28 text-right">{dateLabel}</div>
         {share.data.SourceApp && (
           <div className="w-20 truncate capitalize">{share.data.SourceApp}</div>
@@ -943,15 +934,20 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
   )
 
   const copyShareLink = useCallback(
-    (share: Share) => {
+    async (share: Share) => {
       if (!user) return
-      const url = `${window.location.origin}/browse/${user.id}/doc/${share.data.ContentId}`
-      navigator.clipboard.writeText(url).then(() => {
-        setCopiedId(share.data.ContentId)
-        setTimeout(() => setCopiedId(null), 2000)
-      })
+      const doc = docLookup.get(share.data.ContentId)
+      const ownerId = doc?.data.ownerId ?? share.data.OwnerId ?? user.id
+      const url = `${window.location.origin}/browse/${ownerId}/doc/${share.data.ContentId}`
+      const publishPromise = doc && doc.data.visibility !== 'public'
+        ? put(share.data.ContentId, { ...doc.data, visibility: 'public' })
+        : Promise.resolve()
+
+      await Promise.all([publishPromise, navigator.clipboard.writeText(url)])
+      setCopiedId(share.data.ContentId)
+      setTimeout(() => setCopiedId(null), 2000)
     },
-    [user],
+    [docLookup, put, user],
   )
 
   const deleteDocument = useCallback(
@@ -1400,7 +1396,13 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
               className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5"
             >
               {sorted.map((share) => (
-                <DocCard key={share.data.ContentId} share={share} {...browseTileProps} />
+                <a
+                  key={share.data.ContentId}
+                  href={docPath(share.data.ContentId)}
+                  className="block rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-el-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-el-bg"
+                >
+                  <DocCard share={share} {...browseTileProps} />
+                </a>
               ))}
             </div>
           ) : (
@@ -1419,7 +1421,13 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
                 </div>
               </div>
               {sorted.map((share) => (
-                <DocRow key={share.data.ContentId} share={share} {...browseTileProps} />
+                <a
+                  key={share.data.ContentId}
+                  href={docPath(share.data.ContentId)}
+                  className="block outline-none focus-visible:ring-2 focus-visible:ring-el-accent/40 focus-visible:ring-inset"
+                >
+                  <DocRow share={share} {...browseTileProps} />
+                </a>
               ))}
             </div>
           )}

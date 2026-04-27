@@ -69,7 +69,8 @@ export function DocumentPreview({
         data-testid={`doc-preview-${docId}`}
       >
         {shouldMount ? (
-          <div className="absolute inset-0 origin-top-left scale-[0.11] [width:909%] [height:909%]">
+          // Slightly lower scale than 0.11/909% so a bit more of the line width is visible; avoids clipping the end of e.g. "2026".
+          <div className="absolute inset-0 origin-top-left scale-[0.10] [width:1000%] [height:1000%]">
             <DocPreviewEditor docId={docId} />
           </div>
         ) : (

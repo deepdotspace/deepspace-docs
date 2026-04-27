@@ -23,7 +23,6 @@ import Color from '@tiptap/extension-color'
 import Highlight from '@tiptap/extension-highlight'
 import { ResizableImage } from './extensions/ResizableImage'
 import Placeholder from '@tiptap/extension-placeholder'
-import CharacterCount from '@tiptap/extension-character-count'
 import Typography from '@tiptap/extension-typography'
 import Subscript from '@tiptap/extension-subscript'
 import Superscript from '@tiptap/extension-superscript'
@@ -82,7 +81,6 @@ export function useDocEditor({
       Placeholder.configure({
         placeholder: 'Start typing or press / for commands...',
       }),
-      CharacterCount,
       Typography,
       SearchReplace,
       SlashCommands,

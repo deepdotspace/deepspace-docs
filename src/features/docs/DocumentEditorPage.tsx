@@ -38,9 +38,22 @@ import {
   EditorContent,
   FindReplaceBar,
   exportAndDownload,
+  countWordsInDocument,
   type ExportFormat,
 } from './editor'
-import type { Editor } from '@tiptap/react'
+import { useEditorState, type Editor } from '@tiptap/react'
+
+function WordCountDisplay({ editor }: { editor: Editor }) {
+  const wordCount = useEditorState({
+    editor,
+    selector: (snapshot) => countWordsInDocument(snapshot.editor.state.doc),
+  })
+  return (
+    <span className="text-xs text-muted-foreground tabular-nums" data-testid="word-count">
+      {wordCount} words
+    </span>
+  )
+}
 
 function InlineTitle({
   title,
@@ -169,11 +182,13 @@ function ExportMenu({ editor, title }: { editor: Editor; title: string }) {
 // ---------------------------------------------------------------------------
 
 export default function DocumentEditorPage() {
-  const { docId } = useParams<{ docId: string }>()
+  const params = useParams<{ docId: string }>()
   const navigate = useNavigate()
   const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
   const browseMatch = location.pathname.match(/^\/browse\/([^/]+)/)
+  const docPathMatch = location.pathname.match(/\/doc\/([^/]+)/)
+  const docId = params.docId ?? docPathMatch?.[1]
   const backPath = browseMatch ? `/browse/${browseMatch[1]}` : '/'
   const { user } = useUser()
 
@@ -196,6 +211,36 @@ export default function DocumentEditorPage() {
   // wired up for schema compatibility.
   const { doc: ydoc, synced, canWrite } = useYjsRoom(docId ?? 'unknown', 'content')
 
+  // Yjs `canWrite` ignores `documents.visibility`. Also, link visitors often never receive the
+  // owner’s app-scoped `documents` row (`doc` stays undefined), so we must not treat `!doc` as
+  // "allow" for `/browse/.../doc/...` — otherwise make-private has no effect for them.
+  const browseUserId = browseMatch?.[1]
+  const contentOwnerId = selfShare?.data.OwnerId
+
+  const policyAllowsWrite = useMemo(() => {
+    if (doc) {
+      if (doc.data.visibility === 'public') return true
+      if (!user?.id) return false
+      if (user.id === doc.data.ownerId) return true
+      return docShares.some(
+        (s) => s.data.ShareTarget === user.id && s.data.Permission === 'edit',
+      )
+    }
+
+    if (browseUserId) {
+      if (user?.id && user.id === browseUserId) return true
+      return false
+    }
+
+    if (contentOwnerId) {
+      if (user?.id && user.id === contentOwnerId) return true
+      return false
+    }
+
+    return true
+  }, [doc, user?.id, docShares, browseUserId, contentOwnerId])
+  const effectiveCanWrite = canWrite && policyAllowsWrite
+
   const userName = user?.name ?? 'Anonymous'
   const userColor = useMemo(
     () => (user?.id ? getUserColor(user.id) : '#94a3b8'),
@@ -207,7 +252,7 @@ export default function DocumentEditorPage() {
     userName,
     userColor,
     synced,
-    canWrite,
+    canWrite: effectiveCanWrite,
   })
 
   const [linkCopied, setLinkCopied] = useState(false)
@@ -233,8 +278,8 @@ export default function DocumentEditorPage() {
   docSharesRef.current = docShares
   const editorRef = useRef(editor)
   editorRef.current = editor
-  const canWriteRef = useRef(canWrite)
-  canWriteRef.current = canWrite
+  const canWriteRef = useRef(effectiveCanWrite)
+  canWriteRef.current = effectiveCanWrite
   const putShareRef = useRef(putShare)
   putShareRef.current = putShare
   const docIdRef = useRef(docId)
@@ -245,7 +290,7 @@ export default function DocumentEditorPage() {
     const ed = editorRef.current
     const id = docIdRef.current
     if (!ed || !canWriteRef.current || !id) return
-    const words = ed.storage.characterCount?.words({}) ?? 0
+    const words = countWordsInDocument(ed.state.doc)
     const now = new Date().toISOString()
     for (const share of docSharesRef.current) {
       putShareRef.current(share.recordId, {
@@ -257,11 +302,11 @@ export default function DocumentEditorPage() {
   }, [])
 
   const handleUpdate = useCallback(() => {
-    if (!editor || !canWrite || !docId) return
+    if (!editor || !effectiveCanWrite || !docId) return
     clearTimeout(metaTimerRef.current)
     metaPendingRef.current = true
     metaTimerRef.current = setTimeout(flushShareMeta, 2000)
-  }, [editor, canWrite, docId, flushShareMeta])
+  }, [editor, effectiveCanWrite, docId, flushShareMeta])
 
   useEffect(() => {
     if (!editor) return
@@ -337,7 +382,7 @@ export default function DocumentEditorPage() {
 
         <InlineTitle
           title={docTitle}
-          canEdit={canWrite}
+          canEdit={effectiveCanWrite}
           onSave={handleTitleSave}
         />
 
@@ -345,13 +390,9 @@ export default function DocumentEditorPage() {
           <Users className="w-3.5 h-3.5 mr-1" />
         </div>
 
-        {editor && (
-          <span className="text-xs text-muted-foreground tabular-nums" data-testid="word-count">
-            {editor.storage.characterCount?.words({}) ?? 0} words
-          </span>
-        )}
+        {editor && <WordCountDisplay editor={editor} />}
 
-        {canWrite && user && doc?.data.visibility === 'public' && (
+        {effectiveCanWrite && user && doc?.data.visibility === 'public' && (
           <button
             type="button"
             onClick={() => {
@@ -372,18 +413,20 @@ export default function DocumentEditorPage() {
         {editor && <ExportMenu editor={editor} title={docTitle} />}
       </div>
 
-      {!canWrite && (
+      {!effectiveCanWrite && (
         <div
           data-testid="readonly-banner"
           className="flex items-center gap-2 px-4 py-2 bg-muted/50 border-b border-border text-sm text-muted-foreground print:hidden"
         >
           <Lock className="w-3.5 h-3.5" />
-          You are viewing this document in read-only mode.
+          {doc?.data.visibility === 'private' && !policyAllowsWrite
+            ? 'This document is private. Only the owner and invited editors can make changes.'
+            : 'You are viewing this document in read-only mode.'}
         </div>
       )}
 
       {/* Toolbar */}
-      {editor && <EditorToolbar editor={editor} disabled={!canWrite} />}
+      {editor && <EditorToolbar editor={editor} disabled={!effectiveCanWrite} />}
 
       {/* Editor content with find/replace overlay */}
       <div className="flex-1 overflow-y-auto relative z-0">
