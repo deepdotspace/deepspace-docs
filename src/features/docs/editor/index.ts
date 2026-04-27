@@ -19,3 +19,7 @@ export {
   GAP_PX,
   TYPICAL_WORDS_PER_PAGE,
 } from './DocEditorSurface'
+export {
+  DocumentOutlinePanel,
+  DOCUMENT_OUTLINE_WIDTH_PX,
+} from './DocumentOutlinePanel'

@@ -30,6 +30,7 @@ import {
   Link2,
   Download,
   Printer,
+  List,
 } from 'lucide-react'
 import type { DocumentFields, ContentShareFields } from './types'
 import {
@@ -39,6 +40,8 @@ import {
   exportAndDownload,
   countWordsInDocument,
   DocEditorSurface,
+  DocumentOutlinePanel,
+  DOCUMENT_OUTLINE_WIDTH_PX,
   TYPICAL_WORDS_PER_PAGE,
   type ExportFormat,
 } from './editor'
@@ -193,6 +196,11 @@ function ExportMenu({ editor, title }: { editor: Editor; title: string }) {
 // Editor Page
 // ---------------------------------------------------------------------------
 
+const CANVAS_ZOOM_STORAGE_KEY = 'docs2-editor-canvas-zoom'
+const CANVAS_ZOOM_MIN = 0.5
+const CANVAS_ZOOM_MAX = 2
+const CANVAS_ZOOM_STEP = 0.1
+
 export default function DocumentEditorPage() {
   const params = useParams<{ docId: string }>()
   const navigate = useNavigate()
@@ -279,6 +287,81 @@ export default function DocumentEditorPage() {
   })
 
   const [linkCopied, setLinkCopied] = useState(false)
+  const [outlineOpen, setOutlineOpen] = useState(() => {
+    if (typeof window === 'undefined') return true
+    try {
+      return window.localStorage.getItem('docs2-editor-outline-open') !== '0'
+    } catch {
+      return true
+    }
+  })
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('docs2-editor-outline-open', outlineOpen ? '1' : '0')
+    } catch {
+      /* ignore */
+    }
+  }, [outlineOpen])
+
+  /** Zoom only the page canvas (not header/toolbar); Cmd/Ctrl +/- / 0. Uses CSS `zoom` where supported. */
+  const [canvasZoom, setCanvasZoom] = useState(() => {
+    if (typeof window === 'undefined') return 1
+    try {
+      const raw = sessionStorage.getItem(CANVAS_ZOOM_STORAGE_KEY)
+      const v = raw == null ? 1 : Number.parseFloat(raw)
+      if (!Number.isFinite(v)) return 1
+      return Math.min(CANVAS_ZOOM_MAX, Math.max(CANVAS_ZOOM_MIN, Math.round(v * 100) / 100))
+    } catch {
+      return 1
+    }
+  })
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(CANVAS_ZOOM_STORAGE_KEY, String(canvasZoom))
+    } catch {
+      /* ignore */
+    }
+  }, [canvasZoom])
+
+  useEffect(() => {
+    const clamp = (z: number) =>
+      Math.min(CANVAS_ZOOM_MAX, Math.max(CANVAS_ZOOM_MIN, Math.round(z * 100) / 100))
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey
+      if (!mod) return
+
+      const zoomIn =
+        e.key === '+' ||
+        e.key === '=' ||
+        e.code === 'Equal' ||
+        e.code === 'NumpadAdd'
+      const zoomOut =
+        e.key === '-' ||
+        e.key === '_' ||
+        e.code === 'Minus' ||
+        e.code === 'NumpadSubtract'
+      const zoomReset = e.key === '0' && !e.shiftKey
+
+      if (!zoomIn && !zoomOut && !zoomReset) return
+
+      e.preventDefault()
+      e.stopPropagation()
+
+      if (zoomReset) {
+        setCanvasZoom(1)
+        return
+      }
+      if (zoomIn) {
+        setCanvasZoom((z) => clamp(z + CANVAS_ZOOM_STEP))
+        return
+      }
+      setCanvasZoom((z) => clamp(z - CANVAS_ZOOM_STEP))
+    }
+
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [])
 
   // Template prefill — URL carries `?template=<markdown or html>`; only apply if empty.
   const templateApplied = useRef(false)
@@ -473,11 +556,35 @@ export default function DocumentEditorPage() {
       {/* Toolbar (sticky below header; z must stay below z-40 header) */}
       {editor && <EditorToolbar editor={editor} disabled={!effectiveCanWrite} />}
 
-      {/* Gray “desk” + letter-style paper (GDocs / Word–like) */}
-      <div className="relative z-0 flex min-h-0 flex-1 flex-col">
-        {editor && <FindReplaceBar editor={editor} />}
+      {/* Editor canvas: full-width page; outline floats over the left edge */}
+      <div className="relative z-0 flex min-h-0 flex-1 flex-col print:block">
         {editor && (
-          <DocEditorSurface editor={editor} onPageCountChange={onPageCountChange} />
+          <>
+            <DocumentOutlinePanel editor={editor} open={outlineOpen} />
+            <button
+              type="button"
+              onClick={() => setOutlineOpen((o) => !o)}
+              data-testid="toggle-outline"
+              title={outlineOpen ? 'Hide document outline' : 'Show document outline'}
+              style={{
+                top: 12,
+                left: outlineOpen ? DOCUMENT_OUTLINE_WIDTH_PX + 10 : 12,
+              }}
+              className={`absolute z-[35] flex h-9 w-9 items-center justify-center rounded-full border border-border/70 bg-card/90 text-muted-foreground shadow-md backdrop-blur-md transition-[left,box-shadow,background-color,color] duration-200 ease-out hover:bg-card hover:text-foreground hover:shadow-lg print:hidden ${
+                outlineOpen ? 'text-foreground' : ''
+              }`}
+            >
+              <List className="h-4 w-4" strokeWidth={2} />
+            </button>
+            <FindReplaceBar editor={editor} />
+            <div
+              data-testid="doc-canvas-zoom"
+              className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden print:[zoom:1]"
+              style={{ zoom: canvasZoom }}
+            >
+              <DocEditorSurface editor={editor} onPageCountChange={onPageCountChange} />
+            </div>
+          </>
         )}
       </div>
     </div>
