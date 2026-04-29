@@ -19,12 +19,13 @@ import {
   useQuery,
   useMutations,
   useUser,
-  useYjsRoom,
   getUserColor,
+  usePresenceRoom,
 } from 'deepspace'
+import type { Transaction } from '@tiptap/pm/state'
+import { ySyncPluginKey } from '@tiptap/y-tiptap'
 import {
   ArrowLeft,
-  Users,
   Lock,
   Check,
   Link2,
@@ -48,6 +49,14 @@ import {
 } from './editor'
 import EditorToolbar from './editor/EditorToolbar'
 import { useEditorState, type Editor } from '@tiptap/react'
+import { useYjsRoomWithAwareness } from './use-yjs-room-with-awareness'
+import { DocsPresence } from './DocsPresence'
+import {
+  buildDocsPresenceParticipants,
+  PRESENCE_HEARTBEAT_MS,
+  TYPING_IDLE_MS,
+  TYPING_STALE_MS,
+} from './docs-presence-utils'
 
 function WordCountDisplay({ editor, estPages }: { editor: Editor; estPages: number }) {
   const wordCount = useEditorState({
@@ -235,11 +244,16 @@ export default function DocumentEditorPage() {
     return 'Untitled Document'
   }, [selfShare, doc])
 
-  // Yjs connection — YjsRoom DO. We rely on the Y.Doc directly and let
-  // Tiptap's Collaboration extension handle XML fragment sync. The `text`
-  // field returned here is unused for the rich editor but keeps the hook
-  // wired up for schema compatibility.
-  const { doc: ydoc, synced, canWrite } = useYjsRoom(docId ?? 'unknown', 'content')
+  // Yjs + awareness relay (MSG_AWARENESS) so CollaborationCaret / presence updates work.
+  const { doc: ydoc, synced, canWrite, awareness } = useYjsRoomWithAwareness(
+    docId ?? 'unknown',
+    'content',
+  )
+
+  /** Presence peers (PresenceRoom DO) — online avatar strip independent of full Yjs sync ordering. */
+  const presenceScopeId = docId ? `doc:${docId}` : '_'
+  const { peers: presencePeers, connected: presenceConnected, updateState: updatePresenceState } =
+    usePresenceRoom(presenceScopeId)
 
   // Yjs `canWrite` ignores `documents.visibility`. Also, link visitors often never receive the
   // owner’s app-scoped `documents` row (`doc` stays undefined), so we must not treat `!doc` as
@@ -279,11 +293,118 @@ export default function DocumentEditorPage() {
 
   const editor = useDocEditor({
     doc: ydoc,
+    awareness,
     userName,
     userColor,
     synced,
     canWrite: effectiveCanWrite,
   })
+
+  const typingRef = useRef(false)
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const presenceParticipants = useMemo(
+    () =>
+      buildDocsPresenceParticipants(
+        presencePeers,
+        user ?? undefined,
+        effectiveCanWrite,
+        awareness.clientID,
+      ),
+    [presencePeers, user, effectiveCanWrite, awareness.clientID],
+  )
+
+  const typingNames = useMemo(
+    () =>
+      presenceParticipants
+        .filter((participant) => {
+          if (participant.isSelf || !participant.typing) return false
+          if (!participant.lastTypedAt) return true
+          return Date.now() - participant.lastTypedAt < TYPING_STALE_MS
+        })
+        .map((participant) => participant.name),
+    [presenceParticipants],
+  )
+
+  const publishPresence = useCallback(
+    (typing: boolean) => {
+      if (!docId || !user) return
+
+      updatePresenceState({
+        mode: effectiveCanWrite ? 'edit' : 'view',
+        typing,
+        ...(typing ? { lastTypedAt: Date.now() } : {}),
+      })
+
+      // Yjs awareness: only after sync — keeps CollaborationCaret + remote avatars coherent.
+      if (!synced) return
+
+      const name = user.name || user.email || 'Anonymous'
+      awareness.setLocalStateField('user', {
+        name,
+        color: userColor,
+        id: user.id,
+        email: user.email,
+        imageUrl: user.imageUrl,
+      })
+      awareness.setLocalStateField('mode', effectiveCanWrite ? 'edit' : 'view')
+      awareness.setLocalStateField('typing', typing)
+      if (typing) {
+        awareness.setLocalStateField('lastTypedAt', Date.now())
+      }
+    },
+    [awareness, docId, effectiveCanWrite, synced, updatePresenceState, user, userColor],
+  )
+
+  useEffect(() => {
+    publishPresence(typingRef.current)
+  }, [publishPresence, presenceConnected])
+
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
+      try {
+        awareness.setLocalState(null)
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [awareness])
+
+  useEffect(() => {
+    if (!synced || !docId || !user) return
+    const intervalId = window.setInterval(() => {
+      publishPresence(typingRef.current)
+    }, PRESENCE_HEARTBEAT_MS)
+    return () => clearInterval(intervalId)
+  }, [synced, docId, user, publishPresence])
+
+  const markTyping = useCallback(() => {
+    if (!user || !effectiveCanWrite || !synced) return
+    typingRef.current = true
+    publishPresence(true)
+
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
+    typingTimeoutRef.current = setTimeout(() => {
+      typingRef.current = false
+      publishPresence(false)
+    }, TYPING_IDLE_MS)
+  }, [user, effectiveCanWrite, publishPresence, synced])
+
+  useEffect(() => {
+    if (!editor || !effectiveCanWrite || !synced || !user) return
+
+    const onUpdate = ({ transaction }: { transaction: Transaction }) => {
+      if (!transaction.docChanged) return
+      if (transaction.getMeta(ySyncPluginKey)) return
+      markTyping()
+    }
+
+    editor.on('update', onUpdate)
+    return () => {
+      editor.off('update', onUpdate)
+    }
+  }, [editor, effectiveCanWrite, synced, user, markTyping])
 
   const [linkCopied, setLinkCopied] = useState(false)
   const [outlineOpen, setOutlineOpen] = useState(() => {
@@ -510,9 +631,7 @@ export default function DocumentEditorPage() {
           onSave={handleTitleSave}
         />
 
-        <div className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="collaborator-avatars">
-          <Users className="w-3.5 h-3.5 mr-1" />
-        </div>
+        <DocsPresence participants={presenceParticipants} typingNames={typingNames} />
 
         {editor && <WordCountDisplay editor={editor} estPages={estPageCount} />}
 
