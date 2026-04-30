@@ -16,9 +16,11 @@
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react'
 import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import {
+  AuthOverlay,
   useQuery,
   useMutations,
   useUser,
+  useAuth,
   getUserColor,
   usePresenceRoom,
 } from 'deepspace'
@@ -50,7 +52,7 @@ import {
 import EditorToolbar from './editor/EditorToolbar'
 import { useEditorState, type Editor } from '@tiptap/react'
 import { useYjsRoomWithAwareness } from './use-yjs-room-with-awareness'
-import { DocsPresence } from './DocsPresence'
+import { DocsPresence, type DocsPresenceParticipant } from './DocsPresence'
 import {
   buildDocsPresenceParticipants,
   PRESENCE_HEARTBEAT_MS,
@@ -209,6 +211,100 @@ function ExportMenu({ editor, title }: { editor: Editor; title: string }) {
 
 const CANVAS_ZOOM_STORAGE_KEY = 'docs2-editor-canvas-zoom'
 
+function DocumentSignInPrompt({
+  title,
+  subtitle,
+  onSignIn,
+}: {
+  title: string
+  subtitle: string
+  onSignIn: () => void
+}) {
+  return (
+    <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/35 px-4 backdrop-blur-[2px] print:hidden">
+      <div className="w-full max-w-md rounded-2xl border border-border/70 bg-card/95 p-6 text-center shadow-2xl backdrop-blur-xl">
+        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+          <Lock className="h-5 w-5" />
+        </div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+          Sign in required
+        </p>
+        <h2 className="mb-2 text-xl font-semibold text-foreground">{title}</h2>
+        <p className="mb-5 text-sm leading-6 text-muted-foreground">{subtitle}</p>
+        <button
+          type="button"
+          onClick={onSignIn}
+          data-testid="document-sign-in-continue"
+          className="w-full rounded-full bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm transition-opacity hover:opacity-90"
+        >
+          Sign in to continue
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function SignedOutDocumentPreview({
+  title,
+  onSignIn,
+  showAuthModal,
+  onCloseAuth,
+}: {
+  title: string
+  onSignIn: () => void
+  showAuthModal: boolean
+  onCloseAuth: () => void
+}) {
+  return (
+    <div data-testid="app-root" className="relative h-full overflow-hidden bg-background">
+      <div className="h-full select-none opacity-80 blur-sm" aria-hidden="true">
+        <div className="flex h-full flex-col">
+          <div className="flex shrink-0 items-center gap-3 border-b border-border bg-card/60 px-4 py-3">
+            <div className="h-7 w-7 rounded-lg bg-muted" />
+            <div className="h-5 w-64 max-w-[55vw] rounded bg-muted" />
+            <div className="ml-auto h-5 w-20 rounded bg-muted" />
+          </div>
+          <div className="flex shrink-0 items-center gap-2 border-b border-border bg-card px-4 py-2">
+            {Array.from({ length: 12 }).map((_, i) => (
+              <div key={i} className="h-7 w-10 rounded-md bg-muted" />
+            ))}
+          </div>
+          <div className="flex min-h-0 flex-1 bg-muted/30">
+            <div className="hidden w-64 border-r border-border bg-card/50 p-4 lg:block">
+              <div className="mb-4 h-4 w-24 rounded bg-muted" />
+              <div className="space-y-3">
+                <div className="h-3 w-44 rounded bg-muted" />
+                <div className="h-3 w-36 rounded bg-muted" />
+                <div className="h-3 w-40 rounded bg-muted" />
+              </div>
+            </div>
+            <div className="flex flex-1 justify-center overflow-hidden p-8">
+              <div className="h-[900px] w-full max-w-[760px] rounded-sm bg-card p-12 shadow-xl">
+                <div className="mb-8 h-8 w-2/3 rounded bg-muted" />
+                <div className="space-y-4">
+                  {Array.from({ length: 14 }).map((_, i) => (
+                    <div
+                      key={i}
+                      className="h-3 rounded bg-muted"
+                      style={{ width: `${i % 4 === 0 ? 82 : i % 4 === 1 ? 94 : i % 4 === 2 ? 76 : 88}%` }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <DocumentSignInPrompt
+        title={title}
+        subtitle="Sign in with DeepSpace to open this document and continue where you left off."
+        onSignIn={onSignIn}
+      />
+      {showAuthModal && <AuthOverlay onClose={onCloseAuth} />}
+    </div>
+  )
+}
+
 export default function DocumentEditorPage() {
   const params = useParams<{ docId: string }>()
   const navigate = useNavigate()
@@ -219,6 +315,8 @@ export default function DocumentEditorPage() {
   const docId = params.docId ?? docPathMatch?.[1]
   const backPath = browseMatch ? `/browse/${browseMatch[1]}` : '/'
   const { user } = useUser()
+  const { isSignedIn } = useAuth()
+  const [showAuthModal, setShowAuthModal] = useState(false)
 
   const { records: docs, status: documentsQueryStatus } = useQuery<DocumentFields>('documents')
   const doc = docs?.find((d) => d.recordId === docId)
@@ -302,6 +400,7 @@ export default function DocumentEditorPage() {
 
   const typingRef = useRef(false)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [awarenessTick, setAwarenessTick] = useState(0)
 
   const presenceParticipants = useMemo(
     () =>
@@ -314,44 +413,138 @@ export default function DocumentEditorPage() {
     [presencePeers, user, effectiveCanWrite, awareness.clientID],
   )
 
-  const typingNames = useMemo(
-    () =>
-      presenceParticipants
-        .filter((participant) => {
-          if (participant.isSelf || !participant.typing) return false
-          if (!participant.lastTypedAt) return true
-          return Date.now() - participant.lastTypedAt < TYPING_STALE_MS
-        })
-        .map((participant) => participant.name),
-    [presenceParticipants],
-  )
+  const visiblePresenceParticipants = useMemo(() => {
+    const participants = [...presenceParticipants]
+    const seenUserIds = new Set(participants.map((participant) => participant.userId))
+
+    awareness.getStates().forEach((state, clientId) => {
+      if (clientId === awareness.clientID) return
+      const remoteUser = state.user as
+        | { id?: string; name?: string; email?: string; imageUrl?: string }
+        | undefined
+      const userId = remoteUser?.id ?? `awareness:${clientId}`
+      if (seenUserIds.has(userId)) return
+      seenUserIds.add(userId)
+
+      const participant: DocsPresenceParticipant = {
+        clientId,
+        userId,
+        name: remoteUser?.name?.trim() || remoteUser?.email?.trim() || 'Collaborator',
+        mode: state.mode === 'view' ? 'view' : 'edit',
+        typing: state.typing === true,
+        isSelf: false,
+      }
+      if (remoteUser?.email) participant.email = remoteUser.email
+      if (remoteUser?.imageUrl) participant.imageUrl = remoteUser.imageUrl
+      if (typeof state.lastTypedAt === 'number') participant.lastTypedAt = state.lastTypedAt
+      participants.push(participant)
+    })
+
+    return participants
+  }, [awareness, awareness.clientID, awarenessTick, presenceParticipants])
+
+  useEffect(() => {
+    const onAwarenessChange = () => setAwarenessTick((tick) => tick + 1)
+    awareness.on('change', onAwarenessChange)
+    return () => {
+      awareness.off('change', onAwarenessChange)
+    }
+  }, [awareness])
+
+  const typingNames = useMemo(() => {
+    const names: string[] = []
+    const seen = new Set<string>()
+    const pushName = (raw: string | undefined) => {
+      const name = raw?.trim()
+      if (!name || seen.has(name)) return
+      seen.add(name)
+      names.push(name)
+    }
+
+    const isFreshAwarenessTyping = (lastTypedAt: unknown, typing: unknown): boolean => {
+      if (typing !== true) return false
+      if (typeof lastTypedAt === 'number' && Date.now() - lastTypedAt >= TYPING_STALE_MS) {
+        return false
+      }
+      return true
+    }
+
+    const awarenessStates = awareness.getStates()
+    for (const participant of visiblePresenceParticipants) {
+      if (participant.isSelf) continue
+      const presenceTyping =
+        participant.typing === true &&
+        (participant.lastTypedAt == null || Date.now() - participant.lastTypedAt < TYPING_STALE_MS)
+
+      let awarenessTyping = false
+      for (const [clientId, state] of awarenessStates) {
+        if (clientId === awareness.clientID) continue
+        const remoteUser = state.user as { id?: string } | undefined
+        if (remoteUser?.id !== participant.userId) continue
+        if (isFreshAwarenessTyping(state.lastTypedAt, state.typing)) {
+          awarenessTyping = true
+          break
+        }
+      }
+
+      if (presenceTyping || awarenessTyping) pushName(participant.name)
+    }
+
+    awarenessStates.forEach((state, clientId) => {
+      if (clientId === awareness.clientID) return
+      if (!isFreshAwarenessTyping(state.lastTypedAt, state.typing)) return
+      const remoteUser = state.user as { id?: string; name?: string } | undefined
+      const remoteUserId = remoteUser?.id
+      if (
+        remoteUserId &&
+        visiblePresenceParticipants.some((participant) => !participant.isSelf && participant.userId === remoteUserId)
+      ) {
+        return
+      }
+      pushName(remoteUser?.name)
+    })
+
+    return names
+  }, [awareness, awareness.clientID, awarenessTick, visiblePresenceParticipants])
 
   const publishPresence = useCallback(
     (typing: boolean) => {
-      if (!docId || !user) return
+      if (!docId || !user) {
+        if (synced) awareness.setLocalState(null)
+        return
+      }
+
+      const now = Date.now()
 
       updatePresenceState({
         mode: effectiveCanWrite ? 'edit' : 'view',
         typing,
-        ...(typing ? { lastTypedAt: Date.now() } : {}),
+        ...(typing ? { lastTypedAt: now } : {}),
       })
 
-      // Yjs awareness: only after sync — keeps CollaborationCaret + remote avatars coherent.
+      // Yjs awareness powers TipTap collaboration carets. setLocalState replaces the
+      // whole object, so merge to preserve the caret extension's cursor field.
       if (!synced) return
 
       const name = user.name || user.email || 'Anonymous'
-      awareness.setLocalStateField('user', {
+      const previousState = awareness.getLocalState()
+      const nextState: Record<string, unknown> = previousState ? { ...previousState } : {}
+      nextState.user = {
         name,
         color: userColor,
         id: user.id,
         email: user.email,
         imageUrl: user.imageUrl,
-      })
-      awareness.setLocalStateField('mode', effectiveCanWrite ? 'edit' : 'view')
-      awareness.setLocalStateField('typing', typing)
-      if (typing) {
-        awareness.setLocalStateField('lastTypedAt', Date.now())
       }
+      nextState.mode = effectiveCanWrite ? 'edit' : 'view'
+      nextState.typing = typing
+      if (typing) {
+        nextState.lastTypedAt = now
+      } else {
+        delete nextState.lastTypedAt
+      }
+
+      awareness.setLocalState(nextState)
     },
     [awareness, docId, effectiveCanWrite, synced, updatePresenceState, user, userColor],
   )
@@ -391,6 +584,15 @@ export default function DocumentEditorPage() {
     }, TYPING_IDLE_MS)
   }, [user, effectiveCanWrite, publishPresence, synced])
 
+  const stopTyping = useCallback(() => {
+    typingRef.current = false
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current)
+      typingTimeoutRef.current = null
+    }
+    publishPresence(false)
+  }, [publishPresence])
+
   useEffect(() => {
     if (!editor || !effectiveCanWrite || !synced || !user) return
 
@@ -405,6 +607,21 @@ export default function DocumentEditorPage() {
       editor.off('update', onUpdate)
     }
   }, [editor, effectiveCanWrite, synced, user, markTyping])
+
+  useEffect(() => {
+    if (!editor || !synced || !user) return
+
+    const publishCurrentPresence = () => publishPresence(typingRef.current)
+    editor.on('focus', publishCurrentPresence)
+    editor.on('selectionUpdate', publishCurrentPresence)
+    editor.on('blur', stopTyping)
+
+    return () => {
+      editor.off('focus', publishCurrentPresence)
+      editor.off('selectionUpdate', publishCurrentPresence)
+      editor.off('blur', stopTyping)
+    }
+  }, [editor, publishPresence, stopTyping, synced, user])
 
   const [linkCopied, setLinkCopied] = useState(false)
   const [outlineOpen, setOutlineOpen] = useState(() => {
@@ -581,6 +798,17 @@ export default function DocumentEditorPage() {
     )
   }
 
+  if (!isSignedIn && (!synced || (!doc && !hasShareForDoc))) {
+    return (
+      <SignedOutDocumentPreview
+        title={docTitle}
+        onSignIn={() => setShowAuthModal(true)}
+        showAuthModal={showAuthModal}
+        onCloseAuth={() => setShowAuthModal(false)}
+      />
+    )
+  }
+
   if (!doc && !hasShareForDoc) {
     return (
       <div data-testid="app-root" className="flex items-center justify-center h-full bg-background">
@@ -611,8 +839,8 @@ export default function DocumentEditorPage() {
     )
   }
 
-  return (
-    <div data-testid="app-root" className="h-full bg-background flex flex-col">
+  const editorContent = (
+    <>
       {/* Title bar — must stack above the sticky toolbar (z-30) so export/menus are not covered */}
       <div className="relative z-40 flex shrink-0 items-center gap-3 border-b border-border bg-card/60 px-4 py-3 backdrop-blur-sm print:hidden">
         <button
@@ -631,7 +859,7 @@ export default function DocumentEditorPage() {
           onSave={handleTitleSave}
         />
 
-        <DocsPresence participants={presenceParticipants} typingNames={typingNames} />
+        <DocsPresence participants={visiblePresenceParticipants} typingNames={typingNames} />
 
         {editor && <WordCountDisplay editor={editor} estPages={estPageCount} />}
 
@@ -709,6 +937,28 @@ export default function DocumentEditorPage() {
           </>
         )}
       </div>
+    </>
+  )
+
+  if (!isSignedIn) {
+    return (
+      <div data-testid="app-root" className="relative h-full overflow-hidden bg-background">
+        <div className="pointer-events-none h-full select-none blur-sm" aria-hidden="true">
+          <div className="h-full bg-background flex flex-col">{editorContent}</div>
+        </div>
+        <DocumentSignInPrompt
+          title={docTitle}
+          subtitle="This public document is protected until you sign in. Continue with DeepSpace to view it."
+          onSignIn={() => setShowAuthModal(true)}
+        />
+        {showAuthModal && <AuthOverlay onClose={() => setShowAuthModal(false)} />}
+      </div>
+    )
+  }
+
+  return (
+    <div data-testid="app-root" className="h-full bg-background flex flex-col">
+      {editorContent}
     </div>
   )
 }

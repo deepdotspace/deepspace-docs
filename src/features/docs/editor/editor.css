@@ -37,6 +37,7 @@
   position: absolute;
   top: -1.05em;
   left: -1px;
+  z-index: 45;
   font-size: 9px;
   font-weight: 600;
   line-height: 1;
@@ -46,12 +47,6 @@
   border-radius: 3px 3px 3px 0;
   user-select: none;
   pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-}
-
-.collaboration-carets__caret:hover .collaboration-carets__label,
-.ProseMirror-focused .collaboration-carets__label {
   opacity: 1;
 }
 
