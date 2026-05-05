@@ -31,6 +31,11 @@ import { SearchReplace } from './extensions/SearchReplace'
 import { SlashCommands } from './extensions/SlashCommands'
 import type * as Y from 'yjs'
 
+type CollaborationUser = {
+  name?: string | null
+  color?: string | null
+}
+
 export interface UseDocEditorOptions {
   doc: Y.Doc
   /** Optional Yjs awareness instance. When provided, remote cursors render. */
@@ -39,6 +44,49 @@ export interface UseDocEditorOptions {
   userColor: string
   synced: boolean
   canWrite: boolean
+}
+
+function renderCollaborationCaret(user: CollaborationUser): HTMLElement {
+  const color = user.color || '#94a3b8'
+  const cursor = document.createElement('span')
+  cursor.classList.add('collaboration-carets__caret')
+  cursor.style.setProperty('--collaboration-caret-color', color)
+  cursor.setAttribute('aria-hidden', 'true')
+
+  const label = document.createElement('span')
+  label.classList.add('collaboration-carets__label')
+  label.style.backgroundColor = color
+  label.textContent = user.name || 'Collaborator'
+  cursor.appendChild(label)
+
+  return cursor
+}
+
+function renderCollaborationSelection(user: CollaborationUser) {
+  const color = user.color || '#94a3b8'
+  return {
+    class: 'ProseMirror-yjs-selection collaboration-carets__selection',
+    style: `background-color: ${color}33`,
+  }
+}
+
+function stripCollaborationArtifactsFromHTML(html: string): string {
+  if (typeof document === 'undefined') return html
+
+  const container = document.createElement('div')
+  container.innerHTML = html
+
+  container
+    .querySelectorAll('.collaboration-carets__caret, .collaboration-carets__label')
+    .forEach((node) => node.remove())
+
+  container
+    .querySelectorAll('.ProseMirror-yjs-selection, .collaboration-carets__selection')
+    .forEach((node) => {
+      node.replaceWith(...Array.from(node.childNodes))
+    })
+
+  return container.innerHTML
 }
 
 export function useDocEditor({
@@ -93,6 +141,8 @@ export function useDocEditor({
         CollaborationCaret.configure({
           provider,
           user: { name: userName, color: userColor },
+          render: renderCollaborationCaret,
+          selectionRender: renderCollaborationSelection,
         }),
       )
     }
@@ -105,6 +155,9 @@ export function useDocEditor({
       editable: synced && canWrite,
       immediatelyRender: false,
       extensions,
+      editorProps: {
+        transformPastedHTML: stripCollaborationArtifactsFromHTML,
+      },
     },
     [extensions],
   )

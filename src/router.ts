@@ -6,13 +6,11 @@ import { components, hooks, utils } from '@generouted/react-router/client'
 export type Path =
   | `*`
   | `/`
-  | `/browse/:userId`
   | `/browse/:userId/doc/:docId`
   | `/doc/:docId`
 
 export type Params = {
   '/*': { '*': string }
-  '/browse/:userId': { userId: string }
   '/browse/:userId/doc/:docId': { userId: string; docId: string }
   '/doc/:docId': { docId: string }
 }

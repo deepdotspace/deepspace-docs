@@ -25,21 +25,26 @@ import {
   writeVarUint8Array,
 } from 'deepspace'
 
+const UPDATE_BATCH_DELAY_MS = 16
+
 export interface UseYjsRoomWithAwarenessResult {
   doc: Y.Doc
   text: string
   setText: (value: string) => void
   synced: boolean
   canWrite: boolean
+  error: string | null
   awareness: Awareness
 }
 
 export function useYjsRoomWithAwareness(
   docId: string,
   fieldName: string,
+  enabled = true,
 ): UseYjsRoomWithAwarenessResult {
   const [synced, setSynced] = useState(false)
   const [canWrite, setCanWrite] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [text, setTextState] = useState('')
   const [, setUpdateCount] = useState(0)
 
@@ -52,6 +57,8 @@ export function useYjsRoomWithAwareness(
   const awareness = awarenessRef.current
 
   const wsRef = useRef<WebSocket | null>(null)
+  const pendingUpdatesRef = useRef<Uint8Array[]>([])
+  const updateBatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isLocalRef = useRef(false)
   const applyingRemoteAwarenessRef = useRef(false)
 
@@ -69,16 +76,37 @@ export function useYjsRoomWithAwareness(
   useEffect(() => {
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let denyCount = 0
     let alive = true
+
+    if (!enabled) {
+      doc.transact(() => {
+        if (yText.length > 0) yText.delete(0, yText.length)
+      })
+      setTextState('')
+      setSynced(false)
+      setCanWrite(false)
+      setError(null)
+      try {
+        awareness.setLocalState(null)
+      } catch {
+        /* ignore */
+      }
+      return () => {
+        alive = false
+      }
+    }
 
     const connect = async (isReconnect: boolean) => {
       if (!alive) return
+      let didSync = false
 
       if (!isReconnect) {
         doc.transact(() => {
           if (yText.length > 0) yText.delete(0, yText.length)
         })
         setTextState('')
+        setError(null)
         try {
           awareness.setLocalState(null)
         } catch {
@@ -98,6 +126,7 @@ export function useYjsRoomWithAwareness(
 
       ws.onopen = () => {
         setSynced(false)
+        setError(null)
       }
 
       ws.onmessage = (event: MessageEvent<ArrayBuffer>) => {
@@ -126,12 +155,14 @@ export function useYjsRoomWithAwareness(
               writeVarUint(enc, MSG_SYNC_STEP2)
               writeVarUint8Array(enc, diff)
               ws?.send(toUint8Array(enc).buffer)
+              didSync = true
               setSynced(true)
               break
             }
             case MSG_SYNC_STEP2: {
               Y.applyUpdate(doc, payload, 'server')
               setTextState(yText.toString())
+              didSync = true
               setSynced(true)
               break
             }
@@ -157,7 +188,18 @@ export function useYjsRoomWithAwareness(
       ws.onclose = () => {
         wsRef.current = null
         setSynced(false)
-        if (alive) reconnectTimer = setTimeout(() => void connect(true), 1000)
+        if (!alive || !enabled) return
+        if (!didSync) {
+          denyCount += 1
+          if (denyCount < 3) {
+            reconnectTimer = setTimeout(() => void connect(true), 250)
+            return
+          }
+          setError('Unable to connect to this document.')
+          return
+        }
+        denyCount = 0
+        reconnectTimer = setTimeout(() => void connect(true), 1000)
       }
 
       ws.onerror = () => ws?.close()
@@ -176,22 +218,40 @@ export function useYjsRoomWithAwareness(
       }
       wsRef.current = null
     }
-  }, [doc, docId, yText, awareness])
+  }, [doc, docId, yText, awareness, enabled])
 
   useEffect(() => {
+    const flushPendingUpdates = () => {
+      updateBatchTimerRef.current = null
+      const updates = pendingUpdatesRef.current
+      pendingUpdatesRef.current = []
+      const socket = wsRef.current
+      if (!socket || socket.readyState !== WebSocket.OPEN || updates.length === 0) return
+
+      const enc = createEncoder()
+      writeVarUint(enc, MSG_SYNC)
+      writeVarUint(enc, MSG_SYNC_UPDATE)
+      writeVarUint8Array(enc, updates.length === 1 ? updates[0] : Y.mergeUpdates(updates))
+      socket.send(toUint8Array(enc).buffer)
+    }
+
     const handler = (update: Uint8Array, origin: unknown) => {
       if (origin === 'server') return
       const socket = wsRef.current
       if (!socket || socket.readyState !== WebSocket.OPEN) return
-      const enc = createEncoder()
-      writeVarUint(enc, MSG_SYNC)
-      writeVarUint(enc, MSG_SYNC_UPDATE)
-      writeVarUint8Array(enc, update)
-      socket.send(toUint8Array(enc).buffer)
+      pendingUpdatesRef.current.push(update)
+      if (!updateBatchTimerRef.current) {
+        updateBatchTimerRef.current = setTimeout(flushPendingUpdates, UPDATE_BATCH_DELAY_MS)
+      }
     }
     doc.on('update', handler)
     return () => {
       doc.off('update', handler)
+      if (updateBatchTimerRef.current) {
+        clearTimeout(updateBatchTimerRef.current)
+        flushPendingUpdates()
+      }
+      pendingUpdatesRef.current = []
     }
   }, [doc])
 
@@ -234,5 +294,5 @@ export function useYjsRoomWithAwareness(
     [doc, yText, canWrite],
   )
 
-  return { doc, text, setText, synced, canWrite, awareness }
+  return { doc, text, setText, synced, canWrite, error, awareness }
 }

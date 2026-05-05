@@ -14,14 +14,18 @@ export const docsSchema: CollectionSchema = {
     { name: 'title', storage: 'text', interpretation: 'plain', required: true },
     { name: 'ownerId', storage: 'text', interpretation: 'plain', required: true, userBound: true, immutable: true },
     { name: 'visibility', storage: 'text', interpretation: { kind: 'select', options: ['private', 'public'] } },
+    { name: 'collaborators', storage: 'text', interpretation: 'plain' },
+    { name: 'editors', storage: 'text', interpretation: 'plain' },
     /** Empty string = not in any folder. */
     { name: 'folderId', storage: 'text', interpretation: 'plain' },
   ],
   ownerField: 'ownerId',
-  visibilityField: 'visibility',
+  visibilityField: { field: 'visibility', value: 'public' },
+  collaboratorsField: 'collaborators',
   permissions: {
-    viewer: { read: true, create: false, update: false, delete: false },
-    member: { read: true, create: true, update: 'own', delete: 'own' },
+    '*': { read: false, create: false, update: false, delete: false },
+    viewer: { read: false, create: false, update: false, delete: false },
+    member: { read: 'shared', create: true, update: 'own', delete: 'own' },
     admin: { read: true, create: true, update: true, delete: true },
   },
 }

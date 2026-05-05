@@ -55,9 +55,11 @@ export type DocumentPreviewVariant = 'grid' | 'list'
 export function DocumentPreview({
   docId,
   variant = 'grid',
+  canPreview = false,
 }: {
   docId: string
   variant?: DocumentPreviewVariant
+  canPreview?: boolean
 }) {
   const { ref, shouldMount } = useLazyMountInView<HTMLDivElement>()
 
@@ -68,7 +70,7 @@ export function DocumentPreview({
         className="relative flex h-12 w-10 flex-shrink-0 overflow-hidden rounded border border-el-line bg-el-bg shadow-sm"
         data-testid={`doc-preview-${docId}`}
       >
-        {shouldMount ? (
+        {shouldMount && canPreview ? (
           // Slightly lower scale than 0.11/909% so a bit more of the line width is visible; avoids clipping the end of e.g. "2026".
           <div className="absolute inset-0 origin-top-left scale-[0.10] [width:1000%] [height:1000%]">
             <DocPreviewEditor docId={docId} />
@@ -88,7 +90,7 @@ export function DocumentPreview({
       className="relative mb-4 aspect-[3/4] w-full overflow-hidden rounded-lg border border-black/[0.03] bg-el-bg shadow-sm dark:border-el-line"
       data-testid={`doc-preview-${docId}`}
     >
-      {shouldMount ? (
+      {shouldMount && canPreview ? (
         <div className="absolute inset-0 origin-top-left scale-[0.28] [width:357.14%] [height:357.14%]">
           <DocPreviewEditor docId={docId} />
         </div>

@@ -21,6 +21,7 @@ import {
   verifyInternalSignature,
   buildInternalPayload,
   createDeepSpaceAI,
+  workspaceContentSharesSchema,
 } from 'deepspace/worker'
 import type { JwtVerifierConfig, VerifyResult } from 'deepspace/worker'
 import {
@@ -56,7 +57,7 @@ export const __DO_MANIFEST__ = [
 
 export class AppRecordRoom extends RecordRoom {
   constructor(state: DurableObjectState, env: Env) {
-    super(state, env, schemas, { ownerUserId: env.OWNER_USER_ID })
+    super(state, env, [...schemas, workspaceContentSharesSchema], { ownerUserId: env.OWNER_USER_ID })
   }
 }
 
@@ -264,7 +265,199 @@ function wsRoute(
 
 app.get('/ws/:roomId', wsRoute((env) => env.RECORD_ROOMS))
 
-app.get('/ws/yjs/:docId', wsRoute((env) => env.YJS_ROOMS, () => ({ role: 'member' })))
+type DocsYjsRole = 'admin' | 'member' | 'viewer'
+
+interface DocumentRecordForAccess {
+  ownerId?: string
+  visibility?: string
+  collaborators?: string
+  editors?: string
+}
+
+interface ContentShareRecordForAccess {
+  ContentType?: string
+  ContentId?: string
+  OwnerId?: string
+  ShareType?: string
+  ShareTarget?: string
+  Permission?: string
+}
+
+type DocumentAccessLookup =
+  | { kind: 'found'; doc: DocumentRecordForAccess }
+  | { kind: 'not-docs-room' }
+  | { kind: 'error' }
+
+type RecordEnvelopeForAccess = {
+  data?: DocumentRecordForAccess
+}
+
+type ContentShareEnvelopeForAccess = {
+  data?: ContentShareRecordForAccess
+}
+
+function parseAccessList(raw: string | undefined): string[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function extractDocumentRecordForAccess(value: unknown): DocumentRecordForAccess | null {
+  if (!value || typeof value !== 'object') return null
+  const obj = value as Record<string, unknown>
+  const data = obj.data
+  if (data && typeof data === 'object') return data as DocumentRecordForAccess
+  const record = obj.record
+  if (record && typeof record === 'object') {
+    const recordData = (record as RecordEnvelopeForAccess).data
+    if (recordData && typeof recordData === 'object') return recordData
+  }
+  return null
+}
+
+function extractContentSharesForAccess(value: unknown): ContentShareRecordForAccess[] {
+  if (!value || typeof value !== 'object') return []
+  const obj = value as Record<string, unknown>
+  const records = Array.isArray(obj.records) ? obj.records : Array.isArray(obj.data) ? obj.data : []
+  return records
+    .map((record) => {
+      if (!record || typeof record !== 'object') return null
+      const data = (record as ContentShareEnvelopeForAccess).data
+      return data && typeof data === 'object' ? data : null
+    })
+    .filter((record): record is ContentShareRecordForAccess => Boolean(record))
+}
+
+async function getDocumentForAccess(env: Env, docId: string): Promise<DocumentAccessLookup> {
+  const stub = env.RECORD_ROOMS.get(env.RECORD_ROOMS.idFromName(`app:${env.APP_NAME}`))
+  try {
+    const res = await stub.fetch(
+      new Request('https://internal/api/tools/execute?appAction=true', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          tool: 'records.get',
+          userId: env.OWNER_USER_ID,
+          params: { collection: 'documents', recordId: docId },
+        }),
+      }),
+    )
+    const json = (await res.json()) as {
+      success?: boolean
+      error?: string
+      data?: unknown
+    }
+    const doc = extractDocumentRecordForAccess(json.data)
+    if (json.success && doc) {
+      return { kind: 'found', doc }
+    }
+    if (
+      json.error === 'Record not found' ||
+      json.error?.startsWith('Schema not registered for collection: documents')
+    ) {
+      return { kind: 'not-docs-room' }
+    }
+    return { kind: 'error' }
+  } catch {
+    return { kind: 'error' }
+  }
+}
+
+async function getDirectShareRoleForAccess(
+  env: Env,
+  docId: string,
+  userId: string,
+): Promise<DocsYjsRole | null> {
+  const stub = env.RECORD_ROOMS.get(env.RECORD_ROOMS.idFromName('workspace:default'))
+  try {
+    const res = await stub.fetch(
+      new Request('https://internal/api/tools/execute?appAction=true', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          tool: 'records.query',
+          userId: env.OWNER_USER_ID,
+          params: {
+            collection: 'content_shares',
+            where: {
+              ContentType: 'document',
+              ContentId: docId,
+              ShareTarget: userId,
+            },
+          },
+        }),
+      }),
+    )
+    const json = (await res.json()) as {
+      success?: boolean
+      data?: unknown
+    }
+    if (!json.success) return null
+    const directShare = extractContentSharesForAccess(json.data).find(
+      (share) =>
+        share.ContentType === 'document' &&
+        share.ContentId === docId &&
+        share.ShareTarget === userId &&
+        share.OwnerId !== userId &&
+        share.ShareType !== 'self',
+    )
+    if (!directShare) return null
+    return directShare.Permission === 'edit' ? 'member' : 'viewer'
+  } catch {
+    return null
+  }
+}
+
+async function resolveDocsYjsRole(
+  env: Env,
+  docId: string,
+  userId: string,
+): Promise<DocsYjsRole | null> {
+  const shareRole = await getDirectShareRoleForAccess(env, docId, userId)
+  const lookup = await getDocumentForAccess(env, docId)
+  if (lookup.kind === 'not-docs-room') return shareRole ?? 'member'
+  if (lookup.kind === 'error') return shareRole
+
+  const { doc } = lookup
+  if (doc.ownerId === userId || userId === env.OWNER_USER_ID) return 'admin'
+
+  const editors = parseAccessList(doc.editors)
+  if (editors.includes(userId)) return 'member'
+
+  if (shareRole) return shareRole
+
+  const collaborators = parseAccessList(doc.collaborators)
+  if (collaborators.includes(userId)) return 'viewer'
+
+  return null
+}
+
+app.get('/ws/yjs/:docId', async (c) => {
+  const docId = c.req.param('docId')
+  const url = new URL(c.req.url)
+  const token = url.searchParams.get('token')
+  const auth = token ? (await verifyJwt(jwtConfig(c.env), token)).result : null
+  if (!auth) return new Response('Unauthorized', { status: 401 })
+
+  const role = await resolveDocsYjsRole(c.env, docId, auth.userId)
+  if (!role) return new Response('Forbidden', { status: 403 })
+
+  const doUrl = new URL(c.req.url)
+  doUrl.searchParams.set('userId', auth.userId)
+  doUrl.searchParams.set('role', role)
+  doUrl.searchParams.delete('token')
+
+  const stub = c.env.YJS_ROOMS.get(c.env.YJS_ROOMS.idFromName(docId))
+  return stub.fetch(new Request(doUrl.toString(), c.req.raw))
+})
 
 app.get('/ws/canvas/:docId', wsRoute((env) => env.CANVAS_ROOMS, () => ({ role: 'member' })))
 
@@ -314,7 +507,7 @@ app.post('/api/ai/chat', async (c) => {
   const anthropic = createDeepSpaceAI(c.env, 'anthropic', { authToken: jwt })
 
   // Read-only tools that execute against the app's RecordRoom DO. This is a
-  // user-facing read path (no X-App-Action) so the AI only sees records the
+  // user-facing read path (no appAction) so the AI only sees records the
   // real caller is allowed to see.
   const stub = c.env.RECORD_ROOMS.get(c.env.RECORD_ROOMS.idFromName(`app:${c.env.APP_NAME}`))
   const tools = buildReadOnlyTools(async (toolName, params) => {
@@ -322,18 +515,17 @@ app.post('/api/ai/chat', async (c) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-User-Id': auth.userId,
       },
-      body: JSON.stringify({ tool: toolName, params }),
+      body: JSON.stringify({ tool: toolName, userId: auth.userId, params }),
     }))
     return res.json()
   })
 
   const result = streamText({
-    model: anthropic('claude-sonnet-4-20250514'),
+    model: anthropic('claude-sonnet-4-20250514') as any,
     system: buildSystemPrompt(c.env.APP_NAME, schemas),
-    messages,
-    tools,
+    messages: messages as any,
+    tools: tools as any,
     maxSteps: 5,
     onError: ({ error }) => {
       console.error('[ai-chat] streamText error:', error)
@@ -415,6 +607,9 @@ app.get('*', async (c) => {
   const response = await c.env.ASSETS.fetch(c.req.raw)
   if (response.status === 404) {
     const url = new URL(c.req.url)
+    if (url.pathname.startsWith('/assets/') || /\.[^/]+$/.test(url.pathname)) {
+      return response
+    }
     url.pathname = '/index.html'
     return c.env.ASSETS.fetch(new Request(url.toString(), c.req.raw))
   }
@@ -429,14 +624,12 @@ function createActionTools(env: Env, userId: string, callerJwt: string): ActionT
   const stub = env.RECORD_ROOMS.get(env.RECORD_ROOMS.idFromName(`app:${env.APP_NAME}`))
 
   async function execTool(tool: string, params: Record<string, unknown>): Promise<ActionResult> {
-    const res = await stub.fetch(new Request('https://internal/api/tools/execute', {
+    const res = await stub.fetch(new Request('https://internal/api/tools/execute?appAction=true', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-User-Id': userId,
-        'X-App-Action': 'true',
       },
-      body: JSON.stringify({ tool, params }),
+      body: JSON.stringify({ tool, userId, params }),
     }))
     return res.json() as Promise<ActionResult>
   }
@@ -465,7 +658,11 @@ function createActionTools(env: Env, userId: string, callerJwt: string): ActionT
     update: (collection, recordId, data) => execTool('records.update', { collection, recordId, data }),
     remove: (collection, recordId) => execTool('records.delete', { collection, recordId }),
     get: (collection, recordId) => execTool('records.get', { collection, recordId }),
-    query: (collection, options) => execTool('records.query', { collection, ...options }),
+    query: (collection, options) =>
+      execTool('records.query', {
+        collection,
+        ...(options && typeof options === 'object' ? options : {}),
+      }),
     integration: callIntegration,
   }
 }

@@ -1,12 +1,11 @@
 /**
  * Document List Page
  *
- * Shows the caller's own documents or another user's public documents.
+ * Shows the caller's own documents or invite-only shared documents.
  * Includes search, sort, templates, favorites, and grid/list views.
  *
  * Usage:
  *   <DocumentListPage />                      // own docs
- *   <DocumentListPage browseUserId="..." />   // another user's public docs
  *
  * Metadata (title, last edited, share fields, etc.) lives on `content_shares`
  * (workspace:default DO). The `documents` record holds content (title),
@@ -41,8 +40,6 @@ import {
   Trash2,
   Pencil,
   Lock,
-  Globe,
-  ArrowLeft,
   Share2,
   Star,
   LayoutGrid,
@@ -89,6 +86,16 @@ import {
 import { getFavorites, saveFavorites } from './favorites'
 
 type Share = RecordData<ContentShareFields>
+
+function parseShareIds(raw: string | undefined): string[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : []
+  } catch {
+    return []
+  }
+}
 
 /** Own-docs list table: meta columns — header + DocRow must stay identical */
 const OWN_LIST_META_GAP = 'gap-6'
@@ -358,25 +365,17 @@ function formatShareDate(share: Share): string {
 }
 
 function DocumentDescription({
-  visibility,
   ownerLabel,
   dateLabel,
 }: {
-  visibility: DocumentFields['visibility']
   ownerLabel: string
   dateLabel: string
 }) {
-  const visibilityLabel = visibility === 'public' ? 'Public' : 'Private'
-
   return (
     <div className="mt-0.5 flex w-full min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] font-medium leading-4 tracking-tight text-el-muted">
       <span className="inline-flex shrink-0 items-center gap-1">
-        {visibility === 'public' ? (
-          <Globe className="h-3 w-3 text-emerald-500" />
-        ) : (
-          <Lock className="h-3 w-3" />
-        )}
-        {visibilityLabel}
+        <Lock className="h-3 w-3" />
+        Private
       </span>
       <span className="shrink-0 text-el-muted/70">&middot;</span>
       <span className="shrink-0 whitespace-nowrap">{dateLabel}</span>
@@ -416,14 +415,12 @@ function SharedDocumentDescription({
 
 type DocumentActionsMenuProps = {
   share: Share
-  visibility: DocumentFields['visibility']
   isFav: boolean
   docLookup: Map<string, RecordData<DocumentFields>>
   sortedFolders: RecordData<DocFolderFields>[]
   canModify: boolean
   copiedId: string | null
   toggleFavoriteById: (contentId: string) => void
-  toggleShareVisibility: (share: Share) => void | Promise<void>
   handleMoveDocToFolder: (contentId: string, folderId: string) => void | Promise<void>
   copyShareLink: (share: Share) => void | Promise<void>
   startRename: (share: Share) => void
@@ -432,14 +429,12 @@ type DocumentActionsMenuProps = {
 
 function DocumentActionsMenu({
   share,
-  visibility,
   isFav,
   docLookup,
   sortedFolders,
   canModify,
   copiedId,
   toggleFavoriteById,
-  toggleShareVisibility,
   handleMoveDocToFolder,
   copyShareLink,
   startRename,
@@ -481,18 +476,6 @@ function DocumentActionsMenu({
         </DropdownMenuItem>
         {canModify && (
           <>
-            <DropdownMenuItem
-              className="cursor-pointer"
-              onSelect={() => void toggleShareVisibility(share)}
-              data-testid={`visibility-btn-${contentId}`}
-            >
-              {visibility === 'public' ? (
-                <Globe className="h-4 w-4 text-emerald-500" />
-              ) : (
-                <Lock className="h-4 w-4" />
-              )}
-              {visibility === 'public' ? 'Make private' : 'Make public'}
-            </DropdownMenuItem>
             <DropdownMenuSub>
               <DropdownMenuSubTrigger className="cursor-pointer">
                 <Folder className="h-4 w-4" />
@@ -528,11 +511,7 @@ function DocumentActionsMenu({
               ) : (
                 <Link2 className="h-4 w-4" />
               )}
-              {copiedId === contentId
-                ? 'Copied link'
-                : visibility === 'public'
-                  ? 'Copy share link'
-                  : 'Publish and copy link'}
+              {copiedId === contentId ? 'Copied link' : 'Copy private link'}
             </DropdownMenuItem>
             <DropdownMenuItem
               className="cursor-pointer"
@@ -562,6 +541,7 @@ type OwnDocTileSharedProps = {
   docLookup: Map<string, RecordData<DocumentFields>>
   favorites: Set<string>
   isOwnScope: boolean
+  canPreview: boolean
   userName: string | undefined
   onOpenDoc: (contentId: string) => void
   renamingId: string | null
@@ -576,6 +556,7 @@ function DocCard({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
   const {
     docLookup,
     isOwnScope,
+    canPreview,
     userName,
     onOpenDoc,
     renamingId,
@@ -585,8 +566,6 @@ function DocCard({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
     setRenamingId,
     renderActions,
   } = tile
-  const doc = docLookup.get(share.data.ContentId)
-  const visibility = doc?.data.visibility ?? 'private'
   const contentId = share.data.ContentId
   const ownerLabel = isOwnScope ? (userName ?? 'Me') : (share.data.OwnerName ?? 'User')
   const dateLabel = formatShareDate(share)
@@ -598,7 +577,7 @@ function DocCard({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
       whileHover={{ y: -2 }}
       className="animate-etheris-fade-in group cursor-pointer rounded-xl border border-el-line bg-el-surface p-4 shadow-sm transition-all hover:border-el-accent/35 hover:shadow-md"
     >
-      <DocumentPreview docId={contentId} variant="grid" />
+      <DocumentPreview docId={contentId} variant="grid" canPreview={canPreview} />
 
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
@@ -622,7 +601,6 @@ function DocCard({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
             </h3>
           )}
           <DocumentDescription
-            visibility={visibility}
             ownerLabel={ownerLabel}
             dateLabel={dateLabel}
           />
@@ -640,6 +618,7 @@ function DocRow({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
   const {
     docLookup,
     isOwnScope,
+    canPreview,
     userName,
     onOpenDoc,
     renamingId,
@@ -649,8 +628,6 @@ function DocRow({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
     setRenamingId,
     renderActions,
   } = tile
-  const doc = docLookup.get(share.data.ContentId)
-  const visibility = doc?.data.visibility ?? 'private'
   const contentId = share.data.ContentId
   const ownerLabel = isOwnScope ? (userName ?? 'Me') : (share.data.OwnerName ?? 'User')
   const dateLabel = formatShareDate(share)
@@ -664,7 +641,7 @@ function DocRow({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
       className="group flex cursor-pointer items-center gap-4 border-b border-el-line bg-el-surface px-4 py-3 transition-colors last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
     >
       <div className="flex min-w-0 flex-1 items-center gap-4">
-        <DocumentPreview docId={contentId} variant="list" />
+        <DocumentPreview docId={contentId} variant="list" canPreview={canPreview} />
 
         <div className="min-w-0 flex-1">
           <h4 className="line-clamp-2 text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
@@ -672,7 +649,6 @@ function DocRow({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
           </h4>
           <div className="md:hidden">
             <DocumentDescription
-              visibility={visibility}
               ownerLabel={ownerLabel}
               dateLabel={dateLabel}
             />
@@ -684,12 +660,8 @@ function DocRow({ share, ...tile }: OwnDocTileSharedProps & { share: Share }) {
         className={`hidden min-w-0 flex-nowrap items-center text-[12px] text-el-muted md:flex ${OWN_LIST_META_GAP}`}
       >
         <div className={`inline-flex ${OWN_COL_VISIBILITY} items-center gap-1`}>
-          {visibility === 'public' ? (
-            <Globe className="h-3 w-3 shrink-0 text-emerald-500" />
-          ) : (
-            <Lock className="h-3 w-3 shrink-0" />
-          )}
-          <span className="truncate">{visibility === 'public' ? 'Public' : 'Private'}</span>
+          <Lock className="h-3 w-3 shrink-0" />
+          <span className="truncate">Private</span>
         </div>
         <div className={`${OWN_COL_OWNER} truncate`}>{ownerLabel}</div>
         <div className={OWN_COL_MODIFIED}>{dateLabel}</div>
@@ -712,7 +684,7 @@ function SharedDocTile({ share, onOpen }: { share: Share; onOpen: (share: Share)
       onClick={() => onOpen(share)}
       className="animate-etheris-fade-in group cursor-pointer rounded-xl border border-el-line bg-el-surface p-4 shadow-sm transition-all hover:border-el-accent/35 hover:shadow-md"
     >
-      <DocumentPreview docId={contentId} variant="grid" />
+      <DocumentPreview docId={contentId} variant="grid" canPreview />
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
@@ -751,7 +723,7 @@ function SharedDocListRow({ share, onOpen }: { share: Share; onOpen: (share: Sha
       className="group flex cursor-pointer items-center gap-4 border-b border-el-line bg-el-surface px-4 py-3 transition-colors last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
     >
       <div className="flex min-w-0 flex-1 items-center gap-4">
-        <DocumentPreview docId={contentId} variant="list" />
+        <DocumentPreview docId={contentId} variant="list" canPreview />
         <div className="min-w-0 flex-1">
           <h4 className="line-clamp-2 text-[13px] font-semibold leading-snug text-el-text transition-colors group-hover:text-el-accent">
             {share.data.Title}
@@ -965,17 +937,12 @@ function LibrarySearchToolbarRow({
   )
 }
 
-export interface DocumentListPageProps {
-  /** If provided, show another user's public docs instead of the caller's own. */
-  browseUserId?: string
-}
-
-export default function DocumentListPage({ browseUserId }: DocumentListPageProps = {}) {
+export default function DocumentListPage() {
   const navigate = useNavigate()
   const { user } = useUser()
   const { isSignedIn } = useAuth()
 
-  const isOwnScope = !browseUserId
+  const isOwnScope = true
 
   const { records: documents } = useQuery<DocumentFields>('documents')
   const { create, put, remove } = useMutations<DocumentFields>('documents')
@@ -1034,7 +1001,7 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
   )
 
   const listControlsHeading = useMemo((): string => {
-    if (!isOwnScope) return 'All documents'
+    if (libraryNav.kind === 'shared') return 'Shared with me'
     if (libraryNav.kind === 'favorites') return 'Favorites'
     if (libraryNav.kind === 'uncategorized') return 'Uncategorized'
     if (libraryNav.kind === 'folder') {
@@ -1043,10 +1010,9 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
       )
     }
     return 'My Documents'
-  }, [isOwnScope, libraryNav, sortedFolders])
+  }, [libraryNav, sortedFolders])
 
-  const docPath = (docId: string) =>
-    browseUserId ? `/browse/${browseUserId}/doc/${docId}` : `/doc/${docId}`
+  const docPath = (docId: string) => `/doc/${docId}`
 
   const docLookup = useMemo(() => {
     const map = new Map<string, RecordData<DocumentFields>>()
@@ -1106,20 +1072,7 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     return out
   }, [documents, mySharesByContentId, user])
 
-  const privateDocs = useMemo(
-    () => myShares.filter((s) => {
-      const doc = docLookup.get(s.data.ContentId)
-      return !doc || doc.data.visibility !== 'public'
-    }),
-    [myShares, docLookup],
-  )
-  const publicDocs = useMemo(
-    () => myShares.filter((s) => {
-      const doc = docLookup.get(s.data.ContentId)
-      return doc?.data.visibility === 'public'
-    }),
-    [myShares, docLookup],
-  )
+  const privateDocs = myShares
   const favoriteDocs = useMemo(
     () => myShares.filter((s) => favorites.has(s.data.ContentId)),
     [myShares, favorites],
@@ -1130,6 +1083,7 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
       const doc = docLookup.get(share.data.ContentId)
       const fid = doc?.data.folderId ?? ''
       if (libraryNav.kind === 'all') return true
+      if (libraryNav.kind === 'shared') return false
       if (libraryNav.kind === 'favorites') return favorites.has(share.data.ContentId)
       if (libraryNav.kind === 'uncategorized') return fid === ''
       if (libraryNav.kind === 'folder') return fid === libraryNav.folderId
@@ -1146,61 +1100,6 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     () => privateDocs.filter(shareMatchesLibraryNav),
     [privateDocs, shareMatchesLibraryNav],
   )
-  const filteredPublicDocs = useMemo(
-    () => publicDocs.filter(shareMatchesLibraryNav),
-    [publicDocs, shareMatchesLibraryNav],
-  )
-
-  // Browse mode: show public docs owned by `browseUserId`.
-  // Server-side RBAC (visibilityField on the documents schema) already
-  // hides private docs from viewers, so we just match to existing records.
-  const browseSharesByContentId = useMemo(() => {
-    if (!browseUserId) return new Map<string, Share>()
-    const byContentId = new Map<string, Share>()
-    for (const s of allShares ?? []) {
-      if (s.data.ContentType !== 'document' || s.data.OwnerId !== browseUserId) continue
-      const existing = byContentId.get(s.data.ContentId)
-      if (!existing || s.data.ShareType === 'self') {
-        byContentId.set(s.data.ContentId, s)
-      }
-    }
-    return byContentId
-  }, [allShares, browseUserId])
-
-  const browseDocs = useMemo(() => {
-    if (!browseUserId) return []
-    const out: Share[] = []
-    const now = new Date().toISOString()
-    for (const d of documents ?? []) {
-      if (d.data.ownerId !== browseUserId) continue
-      if (d.data.visibility !== 'public') continue
-      const s = browseSharesByContentId.get(d.recordId)
-      if (s) {
-        out.push(s)
-      } else {
-        out.push({
-          recordId: `__pending__:${d.recordId}`,
-          data: {
-            ContentType: 'document',
-            ContentId: d.recordId,
-            OwnerId: browseUserId,
-            OwnerName: 'User',
-            Title: d.data.title,
-            ShareType: 'self',
-            ShareTarget: '',
-            Permission: 'view',
-            SharedAt: now,
-            SharedBy: browseUserId,
-            SourceApp: 'docs2',
-            WordCount: 0,
-            LastEditedAt: now,
-          },
-        } as Share)
-      }
-    }
-    return out
-  }, [documents, browseUserId, browseSharesByContentId])
-
   const sharesForContent = useCallback(
     (contentId: string) => (allShares ?? []).filter((s) => s.data.ContentId === contentId),
     [allShares],
@@ -1226,6 +1125,8 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
       title,
       ownerId: user.id,
       visibility: 'private',
+      collaborators: '[]',
+      editors: '[]',
       folderId: folderIdForNew,
     })
     await createShare({
@@ -1258,18 +1159,13 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
   const copyShareLink = useCallback(
     async (share: Share) => {
       if (!user) return
-      const doc = docLookup.get(share.data.ContentId)
-      const ownerId = doc?.data.ownerId ?? share.data.OwnerId ?? user.id
-      const url = `${window.location.origin}/browse/${ownerId}/doc/${share.data.ContentId}`
-      const publishPromise = doc && doc.data.visibility !== 'public'
-        ? put(share.data.ContentId, { ...doc.data, visibility: 'public' })
-        : Promise.resolve()
+      const url = `${window.location.origin}${docPath(share.data.ContentId)}`
 
-      await Promise.all([publishPromise, navigator.clipboard.writeText(url)])
+      await navigator.clipboard.writeText(url)
       setCopiedId(share.data.ContentId)
       setTimeout(() => setCopiedId(null), 2000)
     },
-    [docLookup, put, user],
+    [docPath, user],
   )
 
   const deleteDocument = useCallback(
@@ -1303,16 +1199,6 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
       setRenamingId(null)
     },
     [put, putShare, renameValue, sharesForContent, docLookup],
-  )
-
-  const toggleShareVisibility = useCallback(
-    async (share: Share) => {
-      const doc = docLookup.get(share.data.ContentId)
-      if (!doc) return
-      const newVisibility = doc.data.visibility === 'public' ? 'private' : 'public'
-      await put(share.data.ContentId, { ...doc.data, visibility: newVisibility })
-    },
-    [put, docLookup],
   )
 
   const toggleSidebarCollapsed = useCallback(() => {
@@ -1391,6 +1277,52 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
   )
 
   const canModify = isOwnScope
+  const sharedWithMe = useMemo(() => {
+    if (!user?.id) return []
+    const byContentId = new Map<string, Share>()
+    for (const s of allShares ?? []) {
+      if (
+        s.data.ContentType === 'document' &&
+        s.data.OwnerId !== user.id &&
+        s.data.ShareTarget === user.id
+      ) {
+        byContentId.set(s.data.ContentId, s)
+      }
+    }
+
+    const now = new Date().toISOString()
+    for (const d of documents ?? []) {
+      if (d.data.ownerId === user.id) continue
+      const collaborators = parseShareIds(d.data.collaborators)
+      if (!collaborators.includes(user.id) || byContentId.has(d.recordId)) continue
+      const editors = parseShareIds(d.data.editors)
+      byContentId.set(d.recordId, {
+        recordId: `__collaborator__:${d.recordId}`,
+        data: {
+          ContentType: 'document',
+          ContentId: d.recordId,
+          OwnerId: d.data.ownerId,
+          OwnerName: 'Owner',
+          Title: d.data.title,
+          ShareType: 'user',
+          ShareTarget: user.id,
+          Permission: editors.includes(user.id) ? 'edit' : 'view',
+          SharedAt: now,
+          SharedBy: d.data.ownerId,
+          SourceApp: 'docs2',
+          WordCount: 0,
+          LastEditedAt: now,
+        },
+      } as Share)
+    }
+
+    return [...byContentId.values()].sort((a, b) =>
+      (b.data.SharedAt ?? '').localeCompare(a.data.SharedAt ?? ''),
+    )
+  }, [allShares, documents, user?.id])
+  const filteredSharedWithMe = sortShares(filterSharesBySearch(sharedWithMe, searchQuery), sortBy)
+  const leadingBlankForNav =
+    canModify && libraryNav.kind !== 'favorites' && libraryNav.kind !== 'shared'
 
   if (isOwnScope && !isSignedIn) {
     return (
@@ -1406,6 +1338,7 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     docLookup,
     favorites,
     isOwnScope: true,
+      canPreview: true,
     userName: user?.name,
     onOpenDoc: (contentId) => navigate(docPath(contentId)),
     renamingId,
@@ -1414,20 +1347,16 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
     handleRename,
     setRenamingId,
     renderActions: (s) => {
-      const docRec = docLookup.get(s.data.ContentId)
-      const visibility = docRec?.data.visibility ?? 'private'
       const isFav = favorites.has(s.data.ContentId)
       return (
         <DocumentActionsMenu
           share={s}
-          visibility={visibility}
           isFav={isFav}
           docLookup={docLookup}
           sortedFolders={sortedFolders}
           canModify={canModify}
           copiedId={copiedId}
           toggleFavoriteById={toggleFavoriteById}
-          toggleShareVisibility={toggleShareVisibility}
           handleMoveDocToFolder={handleMoveDocToFolder}
           copyShareLink={copyShareLink}
           startRename={startRename}
@@ -1702,126 +1631,8 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
   }
 
   // -------------------------------------------------------------------------
-  // Browse mode
-  // -------------------------------------------------------------------------
-  if (!isOwnScope) {
-    const browseTileProps: OwnDocTileSharedProps = {
-      docLookup,
-      favorites,
-      isOwnScope: false,
-      userName: undefined,
-      onOpenDoc: (contentId) => navigate(docPath(contentId)),
-      renamingId: null,
-      renameValue: '',
-      setRenameValue: () => {},
-      handleRename: () => {},
-      setRenamingId: () => {},
-      renderActions: undefined,
-    }
-    const filtered = filterSharesBySearch(browseDocs, searchQuery)
-    const sorted = sortShares(filtered, sortBy)
-    return (
-      <div
-        data-testid="app-root"
-        className="min-h-full overflow-y-auto bg-el-bg selection:bg-el-accent/20"
-      >
-        <div className="px-6 py-10 md:px-12 md:py-12 lg:px-16 lg:py-16">
-          <header className="mb-10 flex flex-wrap items-center justify-between gap-4">
-            <div className="flex min-w-0 items-center gap-3">
-              <button
-                type="button"
-                onClick={() => navigate('/')}
-                data-testid="back-to-own-btn"
-                className="rounded-lg p-1.5 text-el-muted transition-colors hover:bg-el-surface hover:text-el-text"
-                title="Back to your documents"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </button>
-              <h1 className="text-2xl font-bold tracking-tight text-el-text md:text-3xl">
-                Public Documents
-              </h1>
-            </div>
-            <ProfileMenu />
-          </header>
-
-          <div>
-            <LibrarySearchToolbarRow
-              searchQuery={searchQuery}
-              onSearchQueryChange={setSearchQuery}
-              includeDocActions={false}
-              canModify={false}
-              onOpenTemplates={() => setShowTemplates(true)}
-              onCreateDoc={() => void handleCreate()}
-            />
-          </div>
-
-          <LibraryControlsRow />
-
-          {sorted.length === 0 ? (
-            <div
-              data-testid="empty-state"
-              className="flex flex-col items-center justify-center py-20 text-el-muted"
-            >
-              <FileText className="mb-4 h-12 w-12 opacity-40" />
-              <p className="mb-1 text-lg text-el-text">No documents yet</p>
-              <p className="text-sm">This user has no public documents.</p>
-            </div>
-          ) : viewMode === 'grid' ? (
-            <div
-              data-testid="doc-list"
-              className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5"
-            >
-              {sorted.map((share) => (
-                <a
-                  key={share.data.ContentId}
-                  href={docPath(share.data.ContentId)}
-                  className="block rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-el-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-el-bg"
-                >
-                  <DocCard share={share} {...browseTileProps} />
-                </a>
-              ))}
-            </div>
-          ) : (
-            <div
-              data-testid="doc-list"
-              className="overflow-hidden rounded-xl border border-el-line bg-el-surface shadow-sm"
-            >
-              <div className="flex items-center justify-between border-b border-el-line bg-black/[0.02] px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-el-muted dark:bg-white/[0.03]">
-                <div className="flex-1">Name</div>
-                <div className="hidden gap-10 md:flex">
-                  <div className="w-28">Visibility</div>
-                  <div className="w-24 text-right">Words</div>
-                  <div className="w-32">Owner</div>
-                  <div className="w-36 text-right">Last modified</div>
-                  <div className="w-6" />
-                </div>
-              </div>
-              {sorted.map((share) => (
-                <a
-                  key={share.data.ContentId}
-                  href={docPath(share.data.ContentId)}
-                  className="block outline-none focus-visible:ring-2 focus-visible:ring-el-accent/40 focus-visible:ring-inset"
-                >
-                  <DocRow share={share} {...browseTileProps} />
-                </a>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    )
-  }
-
-  // -------------------------------------------------------------------------
   // Own-scope view
   // -------------------------------------------------------------------------
-  const sharedWithMe = (allShares ?? [])
-    .filter((s) => s.data.ContentType === 'document' && s.data.OwnerId !== user?.id)
-    .sort((a, b) => (b.data.SharedAt ?? '').localeCompare(a.data.SharedAt ?? ''))
-
-  const leadingBlankForNav =
-    canModify && libraryNav.kind !== 'favorites'
-
   return (
     <div
       data-testid="app-root"
@@ -1868,14 +1679,59 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
               onCreateDoc={() => void handleCreate()}
             />
           </div>
-          <div className="mb-10">
-            <FolderShortcutRow />
-          </div>
+          {libraryNav.kind !== 'shared' ? (
+            <div className="mb-10">
+              <FolderShortcutRow />
+            </div>
+          ) : null}
 
           <LibraryControlsRow />
 
           <div data-testid="doc-list">
-            {libraryNav.kind === 'favorites' ? (
+            {libraryNav.kind === 'shared' ? (
+              filteredSharedWithMe.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-20 text-el-muted">
+                  <Share2 className="mb-4 h-12 w-12 opacity-40" />
+                  <p className="mb-1 text-lg text-el-text">No shared documents</p>
+                  <p className="text-sm">Documents shared directly with you will appear here.</p>
+                </div>
+              ) : viewMode === 'grid' ? (
+                <div
+                  data-testid="shared-doc-list"
+                  className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5"
+                >
+                  {filteredSharedWithMe.map((share) => (
+                    <SharedDocTile
+                      key={share.recordId}
+                      share={share}
+                      onOpen={(s) => navigate(docPath(s.data.ContentId))}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div
+                  data-testid="shared-doc-list"
+                  className="overflow-hidden rounded-xl border border-el-line bg-el-surface shadow-sm"
+                >
+                  <div className="flex items-center gap-4 border-b border-el-line bg-black/[0.02] px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-el-muted dark:bg-white/[0.03]">
+                    <div className="min-w-0 flex-1">Name</div>
+                    <div className={`hidden flex-nowrap md:flex ${SHARED_LIST_META_GAP}`}>
+                      <div className={SHARED_COL_OWNER}>Owner</div>
+                      <div className={SHARED_COL_MODIFIED}>Modified</div>
+                      <div className={SHARED_COL_APP}>App</div>
+                      <div className={SHARED_COL_ACCESS}>Access</div>
+                    </div>
+                  </div>
+                  {filteredSharedWithMe.map((share) => (
+                    <SharedDocListRow
+                      key={share.recordId}
+                      share={share}
+                      onOpen={(s) => navigate(docPath(s.data.ContentId))}
+                    />
+                  ))}
+                </div>
+              )
+            ) : libraryNav.kind === 'favorites' ? (
               <DocSection
                 title="Favorites"
                 icon={<Star className="h-4 w-4 fill-yellow-500 text-yellow-500" />}
@@ -1920,18 +1776,6 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
                   tileProps={ownDocTileProps}
                 />
 
-                <DocSection
-                  title="Published"
-                  icon={<Globe className="h-4 w-4 text-emerald-500" />}
-                  shares={filteredPublicDocs}
-                  testId="published-docs-heading"
-                  searchQuery={searchQuery}
-                  sortBy={sortBy}
-                  viewMode={viewMode}
-                  canModify={canModify}
-                  onCreateDoc={handleCreate}
-                  tileProps={ownDocTileProps}
-                />
               </>
             )}
           </div>
@@ -1954,7 +1798,7 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
                   <SharedDocTile
                     key={share.recordId}
                     share={share}
-                    onOpen={(s) => navigate(`/browse/${s.data.OwnerId}/doc/${s.data.ContentId}`)}
+                    onOpen={(s) => navigate(docPath(s.data.ContentId))}
                   />
                 ))}
               </div>
@@ -1976,7 +1820,7 @@ export default function DocumentListPage({ browseUserId }: DocumentListPageProps
                   <SharedDocListRow
                     key={share.recordId}
                     share={share}
-                    onOpen={(s) => navigate(`/browse/${s.data.OwnerId}/doc/${s.data.ContentId}`)}
+                    onOpen={(s) => navigate(docPath(s.data.ContentId))}
                   />
                 ))}
               </div>

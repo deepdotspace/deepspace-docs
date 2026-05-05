@@ -29,13 +29,14 @@ import { ySyncPluginKey } from '@tiptap/y-tiptap'
 import {
   ArrowLeft,
   Lock,
-  Check,
-  Link2,
   Download,
   Printer,
   List,
+  Share2,
 } from 'lucide-react'
 import type { DocumentFields, ContentShareFields } from './types'
+import { Badge } from '../../components/ui'
+import { InviteDialog } from './InviteDialog'
 import {
   useDocEditor,
   FindReplaceBar,
@@ -59,6 +60,16 @@ import {
   TYPING_IDLE_MS,
   TYPING_STALE_MS,
 } from './docs-presence-utils'
+
+function parseIdList(raw: string | undefined): string[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : []
+  } catch {
+    return []
+  }
+}
 
 function WordCountDisplay({ editor, estPages }: { editor: Editor; estPages: number }) {
   const wordCount = useEditorState({
@@ -210,6 +221,7 @@ function ExportMenu({ editor, title }: { editor: Editor; title: string }) {
 // ---------------------------------------------------------------------------
 
 const CANVAS_ZOOM_STORAGE_KEY = 'docs2-editor-canvas-zoom'
+const TYPING_PRESENCE_MIN_INTERVAL_MS = 750
 
 function DocumentSignInPrompt({
   title,
@@ -310,10 +322,9 @@ export default function DocumentEditorPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
-  const browseMatch = location.pathname.match(/^\/browse\/([^/]+)/)
   const docPathMatch = location.pathname.match(/\/doc\/([^/]+)/)
   const docId = params.docId ?? docPathMatch?.[1]
-  const backPath = browseMatch ? `/browse/${browseMatch[1]}` : '/'
+  const backPath = '/'
   const { user } = useUser()
   const { isSignedIn } = useAuth()
   const [showAuthModal, setShowAuthModal] = useState(false)
@@ -329,11 +340,32 @@ export default function DocumentEditorPage() {
     () => (allShares ?? []).filter((s) => s.data.ContentId === docId),
     [allShares, docId],
   )
-  const hasShareForDoc = docShares.length > 0
   const recordQueriesSettled =
     (documentsQueryStatus === 'ready' || documentsQueryStatus === 'error') &&
     (sharesQueryStatus === 'ready' || sharesQueryStatus === 'error')
-  const selfShare = docShares.find((s) => s.data.ShareType === 'self') ?? docShares[0]
+  const targetShare = useMemo(
+    () =>
+      user?.id
+        ? docShares.find(
+            (s) =>
+              s.data.ShareType !== 'self' &&
+              s.data.ShareTarget === user.id &&
+              s.data.OwnerId !== user.id,
+          )
+        : undefined,
+    [docShares, user?.id],
+  )
+  const ownerShare = useMemo(
+    () =>
+      user?.id
+        ? (docShares.find((s) => s.data.ShareType === 'self' && s.data.OwnerId === user.id) ??
+          docShares.find((s) => s.data.OwnerId === user.id && !s.data.ShareTarget))
+        : undefined,
+    [docShares, user?.id],
+  )
+  const readableShare = targetShare ?? ownerShare
+  const hasReadableShareForDoc = Boolean(readableShare)
+  const selfShare = readableShare
   const docTitle = useMemo(() => {
     const fromShare = selfShare?.data.Title?.trim()
     const fromRecord = doc?.data.title?.trim()
@@ -342,46 +374,42 @@ export default function DocumentEditorPage() {
     return 'Untitled Document'
   }, [selfShare, doc])
 
+  const collaboratorIds = useMemo(
+    () => parseIdList(doc?.data.collaborators),
+    [doc?.data.collaborators],
+  )
+  const editorIds = useMemo(() => parseIdList(doc?.data.editors), [doc?.data.editors])
+  const effectiveRole: 'owner' | 'editor' | 'viewer' | 'none' = useMemo(() => {
+    if (!user?.id) return 'none'
+    if (doc?.data.ownerId === user.id || ownerShare?.data.OwnerId === user.id) return 'owner'
+    if (editorIds.includes(user.id) || targetShare?.data.Permission === 'edit') return 'editor'
+    if (collaboratorIds.includes(user.id) || targetShare) return 'viewer'
+    return 'none'
+  }, [
+    collaboratorIds,
+    doc?.data.ownerId,
+    editorIds,
+    ownerShare?.data.OwnerId,
+    targetShare,
+    user?.id,
+  ])
+  const isOwner = effectiveRole === 'owner'
+  const policyAllowsRead = effectiveRole !== 'none'
+  const policyAllowsWrite = effectiveRole === 'owner' || effectiveRole === 'editor'
+
+  const yjsAccessEnabled = Boolean(isSignedIn && docId && policyAllowsRead)
   // Yjs + awareness relay (MSG_AWARENESS) so CollaborationCaret / presence updates work.
-  const { doc: ydoc, synced, canWrite, awareness } = useYjsRoomWithAwareness(
+  const { doc: ydoc, synced, canWrite, error: syncError, awareness } = useYjsRoomWithAwareness(
     docId ?? 'unknown',
     'content',
+    yjsAccessEnabled,
   )
+  const effectiveCanWrite = canWrite && policyAllowsWrite
 
   /** Presence peers (PresenceRoom DO) — online avatar strip independent of full Yjs sync ordering. */
-  const presenceScopeId = docId ? `doc:${docId}` : '_'
+  const presenceScopeId = yjsAccessEnabled && docId ? `doc:${docId}` : '_'
   const { peers: presencePeers, connected: presenceConnected, updateState: updatePresenceState } =
     usePresenceRoom(presenceScopeId)
-
-  // Yjs `canWrite` ignores `documents.visibility`. Also, link visitors often never receive the
-  // owner’s app-scoped `documents` row (`doc` stays undefined), so we must not treat `!doc` as
-  // "allow" for `/browse/.../doc/...` — otherwise make-private has no effect for them.
-  const browseUserId = browseMatch?.[1]
-  const contentOwnerId = selfShare?.data.OwnerId
-
-  const policyAllowsWrite = useMemo(() => {
-    if (doc) {
-      if (doc.data.visibility === 'public') return true
-      if (!user?.id) return false
-      if (user.id === doc.data.ownerId) return true
-      return docShares.some(
-        (s) => s.data.ShareTarget === user.id && s.data.Permission === 'edit',
-      )
-    }
-
-    if (browseUserId) {
-      if (user?.id && user.id === browseUserId) return true
-      return false
-    }
-
-    if (contentOwnerId) {
-      if (user?.id && user.id === contentOwnerId) return true
-      return false
-    }
-
-    return true
-  }, [doc, user?.id, docShares, browseUserId, contentOwnerId])
-  const effectiveCanWrite = canWrite && policyAllowsWrite
 
   const userName = user?.name ?? 'Anonymous'
   const userColor = useMemo(
@@ -400,6 +428,8 @@ export default function DocumentEditorPage() {
 
   const typingRef = useRef(false)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastPresenceSignatureRef = useRef<string | null>(null)
+  const lastTypingPresenceAtRef = useRef(0)
   const [awarenessTick, setAwarenessTick] = useState(0)
 
   const presenceParticipants = useMemo(
@@ -508,16 +538,29 @@ export default function DocumentEditorPage() {
   }, [awareness, awareness.clientID, awarenessTick, visiblePresenceParticipants])
 
   const publishPresence = useCallback(
-    (typing: boolean) => {
+    (typing: boolean, options: { force?: boolean } = {}) => {
       if (!docId || !user) {
         if (synced) awareness.setLocalState(null)
         return
       }
 
       const now = Date.now()
+      const mode = effectiveCanWrite ? 'edit' : 'view'
+      const signature = `${user.id}:${mode}:${typing}`
+      const recentlyPublishedTyping =
+        typing && now - lastTypingPresenceAtRef.current < TYPING_PRESENCE_MIN_INTERVAL_MS
+      if (
+        !options.force &&
+        lastPresenceSignatureRef.current === signature &&
+        (!typing || recentlyPublishedTyping)
+      ) {
+        return
+      }
+      if (typing) lastTypingPresenceAtRef.current = now
+      lastPresenceSignatureRef.current = signature
 
       updatePresenceState({
-        mode: effectiveCanWrite ? 'edit' : 'view',
+        mode,
         typing,
         ...(typing ? { lastTypedAt: now } : {}),
       })
@@ -536,7 +579,7 @@ export default function DocumentEditorPage() {
         email: user.email,
         imageUrl: user.imageUrl,
       }
-      nextState.mode = effectiveCanWrite ? 'edit' : 'view'
+      nextState.mode = mode
       nextState.typing = typing
       if (typing) {
         nextState.lastTypedAt = now
@@ -550,7 +593,7 @@ export default function DocumentEditorPage() {
   )
 
   useEffect(() => {
-    publishPresence(typingRef.current)
+    publishPresence(typingRef.current, { force: true })
   }, [publishPresence, presenceConnected])
 
   useEffect(() => {
@@ -567,7 +610,7 @@ export default function DocumentEditorPage() {
   useEffect(() => {
     if (!synced || !docId || !user) return
     const intervalId = window.setInterval(() => {
-      publishPresence(typingRef.current)
+      publishPresence(typingRef.current, { force: true })
     }, PRESENCE_HEARTBEAT_MS)
     return () => clearInterval(intervalId)
   }, [synced, docId, user, publishPresence])
@@ -590,7 +633,7 @@ export default function DocumentEditorPage() {
       clearTimeout(typingTimeoutRef.current)
       typingTimeoutRef.current = null
     }
-    publishPresence(false)
+    publishPresence(false, { force: true })
   }, [publishPresence])
 
   useEffect(() => {
@@ -623,7 +666,7 @@ export default function DocumentEditorPage() {
     }
   }, [editor, publishPresence, stopTyping, synced, user])
 
-  const [linkCopied, setLinkCopied] = useState(false)
+  const [inviteOpen, setInviteOpen] = useState(false)
   const [outlineOpen, setOutlineOpen] = useState(() => {
     if (typeof window === 'undefined') return true
     try {
@@ -798,10 +841,10 @@ export default function DocumentEditorPage() {
     )
   }
 
-  if (!isSignedIn && (!synced || (!doc && !hasShareForDoc))) {
+  if (!isSignedIn) {
     return (
       <SignedOutDocumentPreview
-        title={docTitle}
+        title="Private document"
         onSignIn={() => setShowAuthModal(true)}
         showAuthModal={showAuthModal}
         onCloseAuth={() => setShowAuthModal(false)}
@@ -809,13 +852,57 @@ export default function DocumentEditorPage() {
     )
   }
 
-  if (!doc && !hasShareForDoc) {
+  if (doc && !policyAllowsRead) {
     return (
       <div data-testid="app-root" className="flex items-center justify-center h-full bg-background">
-        <div className="text-center">
-          <div className="text-4xl mb-4 opacity-40">Document</div>
-          <h2 className="text-lg font-semibold text-foreground mb-2">Document not found</h2>
-          <p className="text-sm text-muted-foreground mb-4">This document may have been deleted or you don&apos;t have access.</p>
+        <div className="max-w-sm px-4 text-center">
+          <Lock className="mx-auto mb-4 h-10 w-10 text-muted-foreground/60" />
+          <h2 className="text-lg font-semibold text-foreground mb-2">This document is private</h2>
+          <p className="text-sm text-muted-foreground mb-4">
+            Ask the owner for an invite to view or edit this document.
+          </p>
+          <button
+            type="button"
+            onClick={() => navigate(backPath)}
+            className="px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm hover:bg-primary-hover transition-colors"
+          >
+            Back to documents
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (!doc && !hasReadableShareForDoc) {
+    return (
+      <div data-testid="app-root" className="flex items-center justify-center h-full bg-background">
+        <div className="max-w-sm px-4 text-center">
+          <Lock className="mx-auto mb-4 h-10 w-10 text-muted-foreground/60" />
+          <h2 className="text-lg font-semibold text-foreground mb-2">This document is private</h2>
+          <p className="text-sm text-muted-foreground mb-4">
+            Ask the owner for an invite to view or edit this document.
+          </p>
+          <button
+            type="button"
+            onClick={() => navigate(backPath)}
+            className="px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm hover:bg-primary-hover transition-colors"
+          >
+            Back to documents
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (syncError) {
+    return (
+      <div data-testid="app-root" className="flex items-center justify-center h-full bg-background">
+        <div className="max-w-sm px-4 text-center">
+          <Lock className="mx-auto mb-4 h-10 w-10 text-muted-foreground/60" />
+          <h2 className="text-lg font-semibold text-foreground mb-2">Unable to open document</h2>
+          <p className="text-sm text-muted-foreground mb-4">
+            Your account does not currently have access to this document, or the sync room is unavailable.
+          </p>
           <button
             type="button"
             onClick={() => navigate(backPath)}
@@ -855,7 +942,7 @@ export default function DocumentEditorPage() {
 
         <InlineTitle
           title={docTitle}
-          canEdit={effectiveCanWrite}
+          canEdit={isOwner}
           onSave={handleTitleSave}
         />
 
@@ -863,23 +950,22 @@ export default function DocumentEditorPage() {
 
         {editor && <WordCountDisplay editor={editor} estPages={estPageCount} />}
 
-        {effectiveCanWrite && user && doc?.data.visibility === 'public' && (
+        {isOwner && doc ? (
           <button
             type="button"
-            onClick={() => {
-              const url = `${window.location.origin}/browse/${user.id}/doc/${docId}`
-              navigator.clipboard.writeText(url).then(() => {
-                setLinkCopied(true)
-                setTimeout(() => setLinkCopied(false), 2000)
-              })
-            }}
-            data-testid="copy-share-link"
-            title={linkCopied ? 'Copied!' : 'Copy share link'}
-            className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => setInviteOpen(true)}
+            data-testid="share-doc-btn"
+            className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            title="Share this document"
           >
-            {linkCopied ? <Check className="w-4 h-4 text-emerald-500" /> : <Link2 className="w-4 h-4" />}
+            <Share2 className="h-3.5 w-3.5" />
+            Share
           </button>
-        )}
+        ) : effectiveRole === 'editor' ? (
+          <Badge variant="default" className="shrink-0 text-xs">Editor</Badge>
+        ) : effectiveRole === 'viewer' ? (
+          <Badge variant="secondary" className="shrink-0 text-xs">Viewer</Badge>
+        ) : null}
 
         {editor && <ExportMenu editor={editor} title={docTitle} />}
       </div>
@@ -890,9 +976,11 @@ export default function DocumentEditorPage() {
           className="relative z-40 flex shrink-0 items-center gap-2 border-b border-border bg-muted/50 px-4 py-2 text-sm text-muted-foreground print:hidden"
         >
           <Lock className="w-3.5 h-3.5" />
-          {doc?.data.visibility === 'private' && !policyAllowsWrite
-            ? 'This document is private. Only the owner and invited editors can make changes.'
-            : 'You are viewing this document in read-only mode.'}
+          {effectiveRole === 'viewer'
+            ? 'You have view-only access to this document. Ask the owner for editor access.'
+            : doc?.data.visibility === 'private' && !policyAllowsWrite
+              ? 'This document is private. Only the owner and invited editors can make changes.'
+              : 'You are viewing this document in read-only mode.'}
         </div>
       )}
 
@@ -937,6 +1025,15 @@ export default function DocumentEditorPage() {
           </>
         )}
       </div>
+      {doc ? (
+        <InviteDialog
+          open={inviteOpen}
+          onOpenChange={setInviteOpen}
+          doc={doc}
+          shares={docShares}
+          isOwner={isOwner}
+        />
+      ) : null}
     </>
   )
 

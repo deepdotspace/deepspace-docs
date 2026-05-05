@@ -19,10 +19,13 @@
 
 .collaboration-carets__caret {
   position: relative;
-  margin-left: -1px;
-  margin-right: -1px;
-  border-left: 1px solid black;
-  border-right: 1px solid black;
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin: 0;
+  border: 0;
+  line-height: 0;
+  vertical-align: baseline;
   word-break: normal;
   pointer-events: none;
 }
@@ -30,12 +33,22 @@
 /* Prevent the > * + * rule from adding margin to cursor elements */
 .tiptap .collaboration-carets__caret {
   margin-top: 0 !important;
-  display: inline;
+}
+
+.collaboration-carets__caret::after {
+  content: '';
+  position: absolute;
+  left: -1px;
+  bottom: -0.14em;
+  height: 1.2em;
+  border-left: 2px solid var(--collaboration-caret-color, black);
+  border-radius: 999px;
+  animation: ProseMirror-cursor-blink 1.1s steps(2, start) infinite;
 }
 
 .collaboration-carets__label {
   position: absolute;
-  top: -1.05em;
+  bottom: 1.05em;
   left: -1px;
   z-index: 45;
   font-size: 9px;
@@ -48,6 +61,21 @@
   user-select: none;
   pointer-events: none;
   opacity: 1;
+}
+
+.tiptap .ProseMirror-yjs-selection,
+.tiptap .collaboration-carets__selection {
+  display: inline;
+  margin: 0 !important;
+  border: 0 !important;
+  padding: 0 !important;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  word-spacing: inherit;
+  vertical-align: baseline;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 
 /* ============================================================================
@@ -82,35 +110,27 @@
 
 /* Same top & bottom inset on the “paper” so the last line matches the header line (GDocs-like). */
 .doc-page-padding {
-  --doc-pad-v: 0.42in;
-  --doc-pad-h: 0.38in;
+  --doc-pad-v: 0.62in;
+  --doc-pad-h: 0.75in;
   padding: var(--doc-pad-v) var(--doc-pad-h);
-}
-
-@media (min-width: 640px) {
-  .doc-page-padding {
-    --doc-pad-v: 0.55in;
-    --doc-pad-h: 0.65in;
-    padding: var(--doc-pad-v) var(--doc-pad-h);
-  }
-}
-
-@media (min-width: 1024px) {
-  .doc-page-padding {
-    /* Slightly tighter than 1" so content starts a bit higher; bottom matches top */
-    --doc-pad-v: 0.62in;
-    --doc-pad-h: 0.75in;
-    padding: var(--doc-pad-v) var(--doc-pad-h);
-  }
 }
 
 /* 1" margins on wrapper (DocEditorSurface); body ~6.5" wide @ 8.5" “paper” */
 .tiptap.doc-editor-page {
   min-height: 0;
   padding: 0;
+  font-family: Arial, Helvetica, sans-serif;
   font-size: 11pt;
   line-height: 1.15;
   color: var(--color-foreground);
+}
+
+.tiptap.doc-editor-page p {
+  margin: 0;
+}
+
+.tiptap.doc-editor-page p + p {
+  margin-top: 0;
 }
 
 .doc-soft-page-break {
@@ -126,13 +146,6 @@
   margin-top: 0 !important;
 }
 
-
-@media (max-width: 640px) {
-  .tiptap.doc-editor-page {
-    font-size: 16px;
-    line-height: 1.6;
-  }
-}
 
 /* Compact read-only previews on the document list (first page clip) */
 .tiptap.doc-preview-tiptap {

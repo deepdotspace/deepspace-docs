@@ -62,7 +62,7 @@ export function buildSystemPrompt(appName: string, schemas: CollectionSchema[]):
 // ============================================================================
 
 export function buildReadOnlyTools(executor: ToolExecutor) {
-  const tools: Record<string, ReturnType<typeof tool>> = {}
+  const tools: Record<string, unknown> = {}
 
   for (const def of BUILT_IN_TOOLS) {
     if (!READ_ONLY_TOOL_NAMES.includes(def.name)) continue

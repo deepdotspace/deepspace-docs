@@ -21,6 +21,7 @@ import {
   Pencil,
   Star,
   Trash2,
+  Users,
 } from 'lucide-react'
 import type { DocFolderFields, LibraryNavSelection } from './types'
 
@@ -303,6 +304,14 @@ export function LibrarySidebar({
             label="Library"
             testId="library-nav-all"
             onClick={() => onSelect({ kind: 'all' })}
+            collapsed={collapsed}
+          />
+          <NavRow
+            active={selection.kind === 'shared'}
+            icon={Users}
+            label="Shared with me"
+            testId="library-nav-shared"
+            onClick={() => onSelect({ kind: 'shared' })}
             collapsed={collapsed}
           />
           <NavRow

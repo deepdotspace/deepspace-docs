@@ -19,6 +19,7 @@ export const GAP_PX = 24
 const PAGE_STRIDE_PX = PAGE_HEIGHT_PX + GAP_PX
 const PAGE_EPSILON_PX = 3
 const MAX_SOFT_PAGE_BREAKS = 80
+const PAGINATION_UPDATE_DELAY_MS = 180
 
 export const TYPICAL_WORDS_PER_PAGE = 480
 
@@ -73,6 +74,7 @@ export function DocEditorSurface({ editor, onPageCountChange }: DocEditorSurface
   const [pageCount, setPageCount] = useState(1)
   const pageBreaksRef = useRef<SoftPageBreak[]>([])
   const rafRef = useRef<number | undefined>(undefined)
+  const recalcTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   const report = useCallback(
     (n: number) => {
@@ -117,6 +119,10 @@ export function DocEditorSurface({ editor, onPageCountChange }: DocEditorSurface
     })
 
     const recalc = () => {
+      if (recalcTimerRef.current !== undefined) {
+        clearTimeout(recalcTimerRef.current)
+        recalcTimerRef.current = undefined
+      }
       if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current)
       rafRef.current = requestAnimationFrame(() => {
         const shell = dom.closest<HTMLElement>('.doc-paged-content')
@@ -166,18 +172,23 @@ export function DocEditorSurface({ editor, onPageCountChange }: DocEditorSurface
         report(measuredPages)
       })
     }
+    const scheduleRecalc = () => {
+      if (recalcTimerRef.current !== undefined) clearTimeout(recalcTimerRef.current)
+      recalcTimerRef.current = setTimeout(recalc, PAGINATION_UPDATE_DELAY_MS)
+    }
 
     const ro = new ResizeObserver(() => {
       recalc()
     })
     ro.observe(dom)
     recalc()
-    editor.on('update', recalc)
+    editor.on('update', scheduleRecalc)
 
     return () => {
+      if (recalcTimerRef.current !== undefined) clearTimeout(recalcTimerRef.current)
       if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current)
       ro.disconnect()
-      editor.off('update', recalc)
+      editor.off('update', scheduleRecalc)
       pageBreaksRef.current = []
       view.setProps({ decorations: previousDecorations })
       refreshDecorations()
