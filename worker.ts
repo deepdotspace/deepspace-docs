@@ -18,23 +18,20 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import {
   verifyJwt,
-  verifyInternalSignature,
-  buildInternalPayload,
   createDeepSpaceAI,
-  workspaceContentSharesSchema,
 } from 'deepspace/worker'
 import type { JwtVerifierConfig, VerifyResult } from 'deepspace/worker'
 import {
   RecordRoom,
   YjsRoom,
   CanvasRoom,
-  MediaRoom,
   PresenceRoom,
+  CronRoom,
 } from 'deepspace/worker'
 import type { ActionTools, ActionResult, DOManifest, DOBindings } from 'deepspace/worker'
 import { streamText } from 'ai'
 import { actions } from './src/actions/index.js'
-import { handleCron } from './src/cron.js'
+import { tasks as cronTasks, runTask as runCronTask } from './src/cron.js'
 import { schemas } from './src/schemas.js'
 import { integrations } from './src/integrations.js'
 import { buildSystemPrompt, buildReadOnlyTools } from './src/ai/tools.js'
@@ -47,8 +44,8 @@ export const __DO_MANIFEST__ = [
   { binding: 'RECORD_ROOMS', className: 'AppRecordRoom', sqlite: true },
   { binding: 'YJS_ROOMS', className: 'AppYjsRoom', sqlite: true },
   { binding: 'CANVAS_ROOMS', className: 'AppCanvasRoom', sqlite: true },
-  { binding: 'MEDIA_ROOMS', className: 'AppMediaRoom', sqlite: true },
   { binding: 'PRESENCE_ROOMS', className: 'AppPresenceRoom', sqlite: true },
+  { binding: 'CRON_ROOMS', className: 'AppCronRoom', sqlite: true },
 ] as const satisfies DOManifest
 
 // =============================================================================
@@ -57,22 +54,29 @@ export const __DO_MANIFEST__ = [
 
 export class AppRecordRoom extends RecordRoom {
   constructor(state: DurableObjectState, env: Env) {
-    super(state, env, [...schemas, workspaceContentSharesSchema], { ownerUserId: env.OWNER_USER_ID })
+    super(state, env, schemas, { ownerUserId: env.OWNER_USER_ID })
   }
 }
 
 export class AppYjsRoom extends YjsRoom {}
 export class AppCanvasRoom extends CanvasRoom {}
-export class AppMediaRoom extends MediaRoom {}
 export class AppPresenceRoom extends PresenceRoom {}
+
+export class AppCronRoom extends CronRoom<Env> {
+  constructor(state: DurableObjectState, env: Env) {
+    super(state, env, { tasks: cronTasks })
+  }
+  protected async onTask(taskName: string): Promise<void> {
+    await runCronTask(taskName, this.env)
+  }
+}
 
 // =============================================================================
 // Types
 // =============================================================================
 
-interface Env extends DOBindings<typeof __DO_MANIFEST__> {
+export interface Env extends DOBindings<typeof __DO_MANIFEST__> {
   ASSETS: Fetcher
-  FILES: R2Bucket
   PLATFORM_WORKER: Fetcher
   APP_IDENTITY_TOKEN: string
   API_WORKER: Fetcher
@@ -236,6 +240,19 @@ app.all('/api/integrations/:name/:endpoint', async (c) => {
 // WebSocket routes
 // ---------------------------------------------------------------------------
 
+/**
+ * The DO reads identity (userId, userName, userEmail, userImageUrl, role)
+ * off the URL it receives and trusts it. We always strip whatever the
+ * client put on the URL and re-apply identity from the verified JWT —
+ * three states: no token = anonymous (the SDK's allowAnonymous flow),
+ * invalid token = 401, valid token = JWT identity.
+ *
+ * Forwarding `userName`/`userEmail`/`userImageUrl` is what lets the
+ * RecordRoom's `registerUser` write a real display name into the `users`
+ * row on first connect; without these the SDK falls back to "Anonymous"
+ * and that name gets stamped into every UI surface that reads the row
+ * (owner labels in the doc list, the InviteDialog, etc.).
+ */
 function wsRoute(
   doNamespace: (env: Env) => DurableObjectNamespace,
   extraParams?: (auth: VerifyResult) => Record<string, string>,
@@ -244,18 +261,30 @@ function wsRoute(
     const id = c.req.param('roomId') ?? c.req.param('docId') ?? c.req.param('scopeId')
     const url = new URL(c.req.url)
     const token = url.searchParams.get('token')
-    const auth = token ? (await verifyJwt(jwtConfig(c.env), token)).result : null
+
+    let auth: VerifyResult | null = null
+    if (token) {
+      auth = (await verifyJwt(jwtConfig(c.env), token)).result
+      if (!auth) return new Response('Unauthorized', { status: 401 })
+    }
 
     const doUrl = new URL(c.req.url)
+    doUrl.searchParams.delete('token')
+    for (const k of ['userId', 'userName', 'userEmail', 'userImageUrl', 'role']) {
+      doUrl.searchParams.delete(k)
+    }
+
     if (auth) {
       doUrl.searchParams.set('userId', auth.userId)
+      if (auth.claims.name) doUrl.searchParams.set('userName', auth.claims.name)
+      if (auth.claims.email) doUrl.searchParams.set('userEmail', auth.claims.email)
+      if (auth.claims.image) doUrl.searchParams.set('userImageUrl', auth.claims.image)
       if (extraParams) {
         for (const [k, v] of Object.entries(extraParams(auth))) {
           doUrl.searchParams.set(k, v)
         }
       }
     }
-    doUrl.searchParams.delete('token')
 
     const ns = doNamespace(c.env)
     const stub = ns.get(ns.idFromName(id))
@@ -269,32 +298,14 @@ type DocsYjsRole = 'admin' | 'member' | 'viewer'
 
 interface DocumentRecordForAccess {
   ownerId?: string
-  visibility?: string
   collaborators?: string
   editors?: string
-}
-
-interface ContentShareRecordForAccess {
-  ContentType?: string
-  ContentId?: string
-  OwnerId?: string
-  ShareType?: string
-  ShareTarget?: string
-  Permission?: string
 }
 
 type DocumentAccessLookup =
   | { kind: 'found'; doc: DocumentRecordForAccess }
   | { kind: 'not-docs-room' }
   | { kind: 'error' }
-
-type RecordEnvelopeForAccess = {
-  data?: DocumentRecordForAccess
-}
-
-type ContentShareEnvelopeForAccess = {
-  data?: ContentShareRecordForAccess
-}
 
 function parseAccessList(raw: string | undefined): string[] {
   if (!raw) return []
@@ -306,44 +317,30 @@ function parseAccessList(raw: string | undefined): string[] {
   }
 }
 
-function extractDocumentRecordForAccess(value: unknown): DocumentRecordForAccess | null {
-  if (!value || typeof value !== 'object') return null
-  const obj = value as Record<string, unknown>
-  const data = obj.data
-  if (data && typeof data === 'object') return data as DocumentRecordForAccess
-  const record = obj.record
-  if (record && typeof record === 'object') {
-    const recordData = (record as RecordEnvelopeForAccess).data
-    if (recordData && typeof recordData === 'object') return recordData
-  }
-  return null
-}
-
-function extractContentSharesForAccess(value: unknown): ContentShareRecordForAccess[] {
-  if (!value || typeof value !== 'object') return []
-  const obj = value as Record<string, unknown>
-  const records = Array.isArray(obj.records) ? obj.records : Array.isArray(obj.data) ? obj.data : []
-  return records
-    .map((record) => {
-      if (!record || typeof record !== 'object') return null
-      const data = (record as ContentShareEnvelopeForAccess).data
-      return data && typeof data === 'object' ? data : null
-    })
-    .filter((record): record is ContentShareRecordForAccess => Boolean(record))
-}
-
-async function getDocumentForAccess(env: Env, docId: string): Promise<DocumentAccessLookup> {
+/**
+ * The DeepSpace SDK's tools/execute handler reads identity from the
+ * `X-User-Id` and `X-App-Action` headers (NOT from the request body
+ * or query string). Sending them anywhere else silently falls back to
+ * `userRole = "viewer"`, which the docs schema's `viewer.read = false`
+ * then denies — so the YJS gate below was returning 403 to every owner
+ * trying to open their own freshly-created document.
+ */
+async function getDocumentForAccess(
+  env: Env,
+  docId: string,
+): Promise<DocumentAccessLookup> {
   const stub = env.RECORD_ROOMS.get(env.RECORD_ROOMS.idFromName(`app:${env.APP_NAME}`))
   try {
     const res = await stub.fetch(
-      new Request('https://internal/api/tools/execute?appAction=true', {
+      new Request('https://internal/api/tools/execute', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-User-Id': env.OWNER_USER_ID,
+          'X-App-Action': 'true',
         },
         body: JSON.stringify({
           tool: 'records.get',
-          userId: env.OWNER_USER_ID,
           params: { collection: 'documents', recordId: docId },
         }),
       }),
@@ -351,11 +348,10 @@ async function getDocumentForAccess(env: Env, docId: string): Promise<DocumentAc
     const json = (await res.json()) as {
       success?: boolean
       error?: string
-      data?: unknown
+      data?: { record?: { data?: DocumentRecordForAccess } }
     }
-    const doc = extractDocumentRecordForAccess(json.data)
-    if (json.success && doc) {
-      return { kind: 'found', doc }
+    if (json.success && json.data?.record?.data) {
+      return { kind: 'found', doc: json.data.record.data }
     }
     if (
       json.error === 'Record not found' ||
@@ -369,70 +365,20 @@ async function getDocumentForAccess(env: Env, docId: string): Promise<DocumentAc
   }
 }
 
-async function getDirectShareRoleForAccess(
-  env: Env,
-  docId: string,
-  userId: string,
-): Promise<DocsYjsRole | null> {
-  const stub = env.RECORD_ROOMS.get(env.RECORD_ROOMS.idFromName('workspace:default'))
-  try {
-    const res = await stub.fetch(
-      new Request('https://internal/api/tools/execute?appAction=true', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          tool: 'records.query',
-          userId: env.OWNER_USER_ID,
-          params: {
-            collection: 'content_shares',
-            where: {
-              ContentType: 'document',
-              ContentId: docId,
-              ShareTarget: userId,
-            },
-          },
-        }),
-      }),
-    )
-    const json = (await res.json()) as {
-      success?: boolean
-      data?: unknown
-    }
-    if (!json.success) return null
-    const directShare = extractContentSharesForAccess(json.data).find(
-      (share) =>
-        share.ContentType === 'document' &&
-        share.ContentId === docId &&
-        share.ShareTarget === userId &&
-        share.OwnerId !== userId &&
-        share.ShareType !== 'self',
-    )
-    if (!directShare) return null
-    return directShare.Permission === 'edit' ? 'member' : 'viewer'
-  } catch {
-    return null
-  }
-}
-
 async function resolveDocsYjsRole(
   env: Env,
   docId: string,
   userId: string,
 ): Promise<DocsYjsRole | null> {
-  const shareRole = await getDirectShareRoleForAccess(env, docId, userId)
   const lookup = await getDocumentForAccess(env, docId)
-  if (lookup.kind === 'not-docs-room') return shareRole ?? 'member'
-  if (lookup.kind === 'error') return shareRole
+  if (lookup.kind === 'not-docs-room') return 'member'
+  if (lookup.kind === 'error') return null
 
   const { doc } = lookup
   if (doc.ownerId === userId || userId === env.OWNER_USER_ID) return 'admin'
 
   const editors = parseAccessList(doc.editors)
   if (editors.includes(userId)) return 'member'
-
-  if (shareRole) return shareRole
 
   const collaborators = parseAccessList(doc.collaborators)
   if (collaborators.includes(userId)) return 'viewer'
@@ -450,18 +396,26 @@ app.get('/ws/yjs/:docId', async (c) => {
   const role = await resolveDocsYjsRole(c.env, docId, auth.userId)
   if (!role) return new Response('Forbidden', { status: 403 })
 
+  // Strip anything the client sent and re-apply identity from the JWT.
+  // The YjsRoom DO uses `userName`/`userEmail`/`userImageUrl` to populate
+  // the awareness "user" field that drives collaboration carets and
+  // presence avatars; without these every label reads "Anonymous".
   const doUrl = new URL(c.req.url)
+  doUrl.searchParams.delete('token')
+  for (const k of ['userId', 'userName', 'userEmail', 'userImageUrl', 'role']) {
+    doUrl.searchParams.delete(k)
+  }
   doUrl.searchParams.set('userId', auth.userId)
   doUrl.searchParams.set('role', role)
-  doUrl.searchParams.delete('token')
+  if (auth.claims.name) doUrl.searchParams.set('userName', auth.claims.name)
+  if (auth.claims.email) doUrl.searchParams.set('userEmail', auth.claims.email)
+  if (auth.claims.image) doUrl.searchParams.set('userImageUrl', auth.claims.image)
 
   const stub = c.env.YJS_ROOMS.get(c.env.YJS_ROOMS.idFromName(docId))
   return stub.fetch(new Request(doUrl.toString(), c.req.raw))
 })
 
 app.get('/ws/canvas/:docId', wsRoute((env) => env.CANVAS_ROOMS, () => ({ role: 'member' })))
-
-app.get('/ws/media/:roomId', wsRoute((env) => env.MEDIA_ROOMS, () => ({ role: 'member' })))
 
 app.get('/ws/presence/:scopeId', wsRoute(
   (env) => env.PRESENCE_ROOMS,
@@ -485,7 +439,7 @@ app.post('/api/actions/:name', async (c) => {
   const params = await c.req.json<Record<string, unknown>>()
   const callerJwt = c.req.header('Authorization')!.slice(7)
   const tools = createActionTools(c.env, auth.userId, callerJwt)
-  const result = await action({ userId: auth.userId, params, tools })
+  const result = await action({ userId: auth.userId, params, tools, env: c.env, callerJwt })
   return c.json(result as unknown as Record<string, unknown>)
 })
 
@@ -507,16 +461,17 @@ app.post('/api/ai/chat', async (c) => {
   const anthropic = createDeepSpaceAI(c.env, 'anthropic', { authToken: jwt })
 
   // Read-only tools that execute against the app's RecordRoom DO. This is a
-  // user-facing read path (no appAction) so the AI only sees records the
-  // real caller is allowed to see.
+  // user-facing read path (no X-App-Action header) so the AI only sees
+  // records the real caller is allowed to see.
   const stub = c.env.RECORD_ROOMS.get(c.env.RECORD_ROOMS.idFromName(`app:${c.env.APP_NAME}`))
   const tools = buildReadOnlyTools(async (toolName, params) => {
     const res = await stub.fetch(new Request('https://internal/api/tools/execute', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-User-Id': auth.userId,
       },
-      body: JSON.stringify({ tool: toolName, userId: auth.userId, params }),
+      body: JSON.stringify({ tool: toolName, params }),
     }))
     return res.json()
   })
@@ -583,23 +538,6 @@ app.all('/api/files/*', async (c) => {
 })
 
 // ---------------------------------------------------------------------------
-// Internal cron (HMAC-authenticated)
-// ---------------------------------------------------------------------------
-
-app.post('/internal/cron', async (c) => {
-  const body = await c.req.text()
-  const valid = await verifyInternalSignature({
-    secret: c.env.INTERNAL_STORAGE_HMAC_SECRET,
-    payload: buildInternalPayload(body),
-    signature: c.req.header('x-internal-signature') ?? '',
-    timestamp: c.req.header('x-internal-timestamp') ?? '',
-  })
-  if (!valid) return c.json({ error: 'Forbidden' }, 403)
-  await handleCron(JSON.parse(body))
-  return c.json({ ok: true })
-})
-
-// ---------------------------------------------------------------------------
 // Static assets (SPA fallback)
 // ---------------------------------------------------------------------------
 
@@ -623,18 +561,29 @@ app.get('*', async (c) => {
 function createActionTools(env: Env, userId: string, callerJwt: string): ActionTools {
   const stub = env.RECORD_ROOMS.get(env.RECORD_ROOMS.idFromName(`app:${env.APP_NAME}`))
 
-  async function execTool(tool: string, params: Record<string, unknown>): Promise<ActionResult> {
-    const res = await stub.fetch(new Request('https://internal/api/tools/execute?appAction=true', {
+  // Internal helper — DO returns `ActionResult<unknown>`. Callers below
+  // cast to the precisely-typed result for each operation. The cast is
+  // safe because the wire shape is set by the SDK's tools-api handler.
+  async function execTool<TData>(
+    tool: string,
+    params: Record<string, unknown>,
+  ): Promise<ActionResult<TData>> {
+    const res = await stub.fetch(new Request('https://internal/api/tools/execute', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-User-Id': userId,
+        'X-App-Action': 'true',
       },
-      body: JSON.stringify({ tool, userId, params }),
+      body: JSON.stringify({ tool, params }),
     }))
-    return res.json() as Promise<ActionResult>
+    return res.json() as Promise<ActionResult<TData>>
   }
 
-  async function callIntegration(endpoint: string, data?: unknown): Promise<ActionResult> {
+  async function callIntegration<T = unknown>(
+    endpoint: string,
+    data?: unknown,
+  ): Promise<ActionResult<T>> {
     const integrationName = endpoint.split('/')[0]
     const billingMode = integrations[integrationName]?.billing ?? 'developer'
 
@@ -650,19 +599,17 @@ function createActionTools(env: Env, userId: string, callerJwt: string): ActionT
       },
       body: data != null ? JSON.stringify(data) : undefined,
     })
-    return res.json() as Promise<ActionResult>
+    return res.json() as Promise<ActionResult<T>>
   }
 
   return {
     create: (collection, data) => execTool('records.create', { collection, data }),
-    update: (collection, recordId, data) => execTool('records.update', { collection, recordId, data }),
+    update: (collection, recordId, data) =>
+      execTool('records.update', { collection, recordId, data }),
     remove: (collection, recordId) => execTool('records.delete', { collection, recordId }),
     get: (collection, recordId) => execTool('records.get', { collection, recordId }),
-    query: (collection, options) =>
-      execTool('records.query', {
-        collection,
-        ...(options && typeof options === 'object' ? options : {}),
-      }),
+    query: (collection, options) => execTool('records.query', { collection, ...options }),
+    registerUser: (opts) => execTool('users.register', opts as Record<string, unknown>),
     integration: callIntegration,
   }
 }

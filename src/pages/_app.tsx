@@ -3,28 +3,17 @@
  *
  * Generouted renders this around all routes.
  *
- * We mount two RecordRoom scopes:
- *   - app:docs2           (app-private: users, settings, documents metadata)
- *   - workspace:default   (shared across apps: content_shares, teams, etc.)
- *
- * `useQuery('documents')` resolves to the app scope, while
- * `useQuery('content_shares')` resolves to the workspace scope —
- * ScopeRegistry does the routing automatically.
+ * Single RecordRoom scope: `app:docs2`. Documents, folders, and access
+ * control all live here — no cross-app `workspace:default` shared scope.
  */
 
 import { Suspense, useEffect, type ReactNode } from 'react'
 import { Outlet } from 'react-router-dom'
 import { DeepSpaceAuthProvider, useAuth } from 'deepspace'
 import { RecordProvider, RecordScope } from 'deepspace'
-import { getGlobalDOSchemas } from 'deepspace/worker'
 import { ToastProvider } from '../components/ui'
 import { APP_NAME, SCOPE_ID } from '../constants'
 import { schemas } from '../schemas'
-
-const WORKSPACE_SHARED_SCOPE = {
-  roomId: 'workspace:default',
-  schemas: getGlobalDOSchemas('workspace'),
-}
 
 const THEME_KEY = 'docs2-theme'
 
@@ -71,12 +60,7 @@ function AuthGate({ children }: { children: ReactNode }) {
 
   return (
     <RecordProvider allowAnonymous>
-      <RecordScope
-        roomId={SCOPE_ID}
-        schemas={schemas}
-        appId={APP_NAME}
-        sharedScopes={[WORKSPACE_SHARED_SCOPE]}
-      >
+      <RecordScope roomId={SCOPE_ID} schemas={schemas} appId={APP_NAME}>
         {children}
       </RecordScope>
     </RecordProvider>

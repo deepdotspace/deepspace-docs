@@ -12,7 +12,7 @@ import {
   Input,
   useToast,
 } from '../../components/ui'
-import type { ContentShareFields, DocumentFields } from './types'
+import type { DocumentFields } from './types'
 
 type InviteRole = 'viewer' | 'editor'
 type UserFields = {
@@ -21,14 +21,33 @@ type UserFields = {
   imageUrl?: string
 }
 
-type ShareRecord = RecordData<ContentShareFields>
+/**
+ * Diff that resulted from an InviteDialog save. The editor page rebroadcasts
+ * this over the doc's presence channel so the affected peer gets the change
+ * even when the docs schema's `read: 'collaborator'` rule prevents the
+ * `documents` record update from reaching a now-removed user.
+ */
+export interface InviteAclDiff {
+  /** Users dropped from `collaborators` entirely. */
+  removedUserIds: string[]
+  /** Users who lost the editor role but remain collaborators (now viewers). */
+  demotedUserIds: string[]
+  /** Existing collaborators who gained the editor role. */
+  promotedUserIds: string[]
+}
 
 interface InviteDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   doc: RecordData<DocumentFields>
-  shares: ShareRecord[]
   isOwner: boolean
+  /**
+   * Called after a save mutation that changed the ACL. The parent uses it to
+   * publish a one-shot permission-change signal over the doc's presence room
+   * so peers (including ones who just lost read access to the doc record)
+   * can react immediately instead of waiting for the next refresh.
+   */
+  onAclChange?: (diff: InviteAclDiff) => void
 }
 
 function parseIds(raw: string | undefined): string[] {
@@ -54,19 +73,10 @@ function initialsFor(name: string): string {
     .join('')
 }
 
-function permissionForRole(role: InviteRole): string {
-  return role === 'editor' ? 'edit' : 'view'
-}
-
-export function InviteDialog({ open, onOpenChange, doc, shares, isOwner }: InviteDialogProps) {
+export function InviteDialog({ open, onOpenChange, doc, isOwner, onAclChange }: InviteDialogProps) {
   const { user } = useUser()
   const { records: users } = useQuery<UserFields>('users')
   const { put } = useMutations<DocumentFields>('documents')
-  const {
-    create: createShare,
-    put: putShare,
-    remove: removeShare,
-  } = useMutations<ContentShareFields>('content_shares')
   const toast = useToast()
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<InviteRole>('editor')
@@ -91,56 +101,37 @@ export function InviteDialog({ open, onOpenChange, doc, shares, isOwner }: Invit
 
   if (!isOwner) return null
 
-  const metricsShare = shares.find((s) => s.data.ShareType === 'self') ?? shares[0]
-
   const saveAccess = async (nextCollaborators: string[], nextEditors: string[]) => {
-    await put(doc.recordId, {
-      ...doc.data,
-      collaborators: JSON.stringify(uniqueIds(nextCollaborators)),
-      editors: JSON.stringify(uniqueIds(nextEditors).filter((id) => nextCollaborators.includes(id))),
-    })
-  }
+    const prevCollaborators = parseIds(doc.data.collaborators)
+    const prevEditors = parseIds(doc.data.editors)
+    const nextCollabList = uniqueIds(nextCollaborators)
+    const nextCollabSet = new Set(nextCollabList)
+    const nextEditorList = uniqueIds(nextEditors).filter((id) => nextCollabSet.has(id))
+    const nextEditorSet = new Set(nextEditorList)
 
-  const upsertTargetShare = async (target: RecordData<UserFields>, nextRole: InviteRole) => {
-    const existing = shares.find(
-      (s) => s.data.ShareTarget === target.recordId && s.data.ShareType !== 'self',
-    )
-    const now = new Date().toISOString()
-    const permission = permissionForRole(nextRole)
-
-    if (existing) {
-      await putShare(existing.recordId, {
-        ...existing.data,
-        Permission: permission,
-        Title: doc.data.title,
-        LastEditedAt: metricsShare?.data.LastEditedAt ?? existing.data.LastEditedAt ?? now,
-        WordCount: metricsShare?.data.WordCount ?? existing.data.WordCount ?? 0,
+    setSaving(true)
+    try {
+      await put(doc.recordId, {
+        ...doc.data,
+        collaborators: JSON.stringify(nextCollabList),
+        editors: JSON.stringify(nextEditorList),
       })
-      return
+
+      if (onAclChange) {
+        const removedUserIds = prevCollaborators.filter((id) => !nextCollabSet.has(id))
+        const demotedUserIds = prevEditors.filter(
+          (id) => nextCollabSet.has(id) && !nextEditorSet.has(id),
+        )
+        const promotedUserIds = nextEditorList.filter(
+          (id) => prevCollaborators.includes(id) && !prevEditors.includes(id),
+        )
+        if (removedUserIds.length || demotedUserIds.length || promotedUserIds.length) {
+          onAclChange({ removedUserIds, demotedUserIds, promotedUserIds })
+        }
+      }
+    } finally {
+      setSaving(false)
     }
-
-    await createShare({
-      ContentType: 'document',
-      ContentId: doc.recordId,
-      OwnerId: doc.data.ownerId,
-      OwnerName: user?.name ?? user?.email ?? 'Owner',
-      Title: doc.data.title,
-      ShareType: 'direct',
-      ShareTarget: target.recordId,
-      Permission: permission,
-      SharedAt: now,
-      SharedBy: user?.id ?? doc.data.ownerId,
-      SourceApp: 'docs2',
-      WordCount: metricsShare?.data.WordCount ?? 0,
-      LastEditedAt: metricsShare?.data.LastEditedAt ?? now,
-    })
-  }
-
-  const removeTargetShares = async (userId: string) => {
-    const targetShares = shares.filter(
-      (s) => s.data.ShareTarget === userId && s.data.ShareType !== 'self',
-    )
-    await Promise.all(targetShares.map((s) => removeShare(s.recordId)))
   }
 
   const addInvite = async () => {
@@ -161,76 +152,59 @@ export function InviteDialog({ open, onOpenChange, doc, shares, isOwner }: Invit
       return
     }
 
-    setSaving(true)
     try {
       const nextCollaborators = [...collaborators, target.recordId]
       const nextEditors = role === 'editor' ? [...editors, target.recordId] : editors
       await saveAccess(nextCollaborators, nextEditors)
-      try {
-        await upsertTargetShare(target, role)
-      } catch (error) {
-        await saveAccess(collaborators, editors).catch(() => {})
-        throw error
-      }
       setEmail('')
       toast.success('Invite added', `${target.data.email ?? normalized} now has ${role} access.`)
     } catch {
       toast.error('Invite failed', 'The document access list was not changed. Please try again.')
-    } finally {
-      setSaving(false)
     }
   }
 
-  const setCollaboratorRole = async (target: RecordData<UserFields>, nextRole: InviteRole) => {
+  const setCollaboratorRole = async (userId: string, nextRole: InviteRole) => {
     if (saving) return
-    setSaving(true)
     try {
-      const previousEditors = editors
       const nextEditors =
         nextRole === 'editor'
-          ? uniqueIds([...editors, target.recordId])
-          : editors.filter((id) => id !== target.recordId)
+          ? uniqueIds([...editors, userId])
+          : editors.filter((id) => id !== userId)
       await saveAccess(collaborators, nextEditors)
-      try {
-        await upsertTargetShare(target, nextRole)
-      } catch (error) {
-        await saveAccess(collaborators, previousEditors).catch(() => {})
-        throw error
-      }
     } catch {
       toast.error('Role update failed', 'The collaborator role was not changed. Please try again.')
-    } finally {
-      setSaving(false)
     }
   }
 
   const removeCollaborator = async (userId: string) => {
     if (saving) return
-    setSaving(true)
     try {
-      const previousCollaborators = collaborators
-      const previousEditors = editors
       await saveAccess(
         collaborators.filter((id) => id !== userId),
         editors.filter((id) => id !== userId),
       )
-      try {
-        await removeTargetShares(userId)
-      } catch (error) {
-        await saveAccess(previousCollaborators, previousEditors).catch(() => {})
-        throw error
-      }
     } catch {
       toast.error('Remove access failed', 'The collaborator still has their previous access.')
-    } finally {
-      setSaving(false)
     }
   }
 
+  /**
+   * "Anonymous" is the SDK's placeholder when a WS connect arrives with
+   * no `userName` query param. Treat it the same as a missing name so we
+   * fall through to email instead of leaking the sentinel into the share
+   * dialog. The new worker.ts forwards JWT claims on every connect, so
+   * after one fresh socket every users-row is rewritten with the real
+   * name and this fallback only matters for stale rows.
+   */
+  const realName = (raw: string | null | undefined): string | null => {
+    const trimmed = raw?.trim()
+    if (!trimmed || trimmed === 'Anonymous') return null
+    return trimmed
+  }
   const ownerName =
-    ownerRecord?.data.name?.trim() ||
+    realName(ownerRecord?.data.name) ||
     ownerRecord?.data.email?.trim() ||
-    user?.name ||
+    realName(user?.name) ||
     user?.email ||
     'Owner'
 
@@ -364,7 +338,7 @@ export function InviteDialog({ open, onOpenChange, doc, shares, isOwner }: Invit
                     <select
                       value={userRole}
                       onChange={(e) =>
-                        void setCollaboratorRole(collaborator, e.target.value as InviteRole)
+                        void setCollaboratorRole(collaborator.recordId, e.target.value as InviteRole)
                       }
                       disabled={saving}
                       data-testid={`share-role-${collaborator.recordId}`}

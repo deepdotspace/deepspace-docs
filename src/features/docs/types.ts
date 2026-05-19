@@ -1,8 +1,9 @@
 export interface DocumentFields {
   title: string
   ownerId: string
-  visibility: 'private' | 'public'
+  /** JSON-encoded array of user ids who can read the doc. */
   collaborators?: string
+  /** JSON-encoded array of user ids (subset of collaborators) who can write. */
   editors?: string
   /** Owning folder record id, or empty / omitted when uncategorized. */
   folderId?: string
@@ -21,23 +22,7 @@ export type LibraryNavSelection =
   | { kind: 'uncategorized' }
   | { kind: 'folder'; folderId: string }
 
-export interface ContentShareFields {
-  ContentType: string
-  ContentId: string
-  OwnerId: string
-  OwnerName: string
-  Title: string
-  ShareType: string
-  ShareTarget: string
-  Permission: string
-  SharedAt: string
-  SharedBy: string
-  SourceApp: string
-  WordCount: number
-  LastEditedAt: string
-}
-
-export type SortOption = 'lastEdited' | 'titleAZ' | 'titleZA' | 'created' | 'wordCount'
+export type SortOption = 'lastEdited' | 'titleAZ' | 'titleZA' | 'created'
 export type ViewMode = 'grid' | 'list'
 
 export interface DocTemplate {
@@ -289,5 +274,4 @@ export const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'titleAZ', label: 'Title A–Z' },
   { value: 'titleZA', label: 'Title Z–A' },
   { value: 'created', label: 'Created (newest)' },
-  { value: 'wordCount', label: 'Word count' },
 ]

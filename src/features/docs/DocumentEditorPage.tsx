@@ -7,14 +7,23 @@
  * links, images, find/replace, export, etc.).
  *
  * Document layout:
- *   - `documents` record (app RecordRoom): title, ownerId, visibility
- *   - `content_shares` record (workspace RecordRoom): cross-app metadata
- *     (title, wordCount, lastEditedAt)
- *   - YjsRoom DO keyed by docId: the actual rich-text content (Yjs XML fragment)
+ *   - `documents` record (app RecordRoom): title, ownerId, collaborators,
+ *     editors, folderId. The schema's `read: 'collaborator'` rule means a
+ *     collaborator's `useQuery('documents')` only returns rows they're
+ *     listed on — used by the WS gate in `worker.ts` to mint admin/member/
+ *     viewer roles for the YjsRoom DO.
+ *   - YjsRoom DO keyed by docId: the rich-text content (Yjs XML fragment).
+ *
+ * Permission changes mid-session are fanned out through the doc's
+ * PresenceRoom: when the owner saves an InviteDialog edit we publish an
+ * `aclSignal` payload onto our presence state, and every other peer
+ * latches the first signal addressed to them. This is the only mechanism
+ * that reaches a *removed* user — the docs schema's collaborator-read
+ * rule means the documents-record update never reaches them otherwise.
  */
 
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react'
-import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
+import { useParams, useNavigate, useLocation, useSearchParams, useRouteError, isRouteErrorResponse } from 'react-router-dom'
 import {
   AuthOverlay,
   useQuery,
@@ -27,16 +36,18 @@ import {
 import type { Transaction } from '@tiptap/pm/state'
 import { ySyncPluginKey } from '@tiptap/y-tiptap'
 import {
+  AlertTriangle,
   ArrowLeft,
   Lock,
   Download,
-  Printer,
   List,
+  Printer,
+  RefreshCw,
   Share2,
 } from 'lucide-react'
-import type { DocumentFields, ContentShareFields } from './types'
+import type { DocumentFields } from './types'
 import { Badge } from '../../components/ui'
-import { InviteDialog } from './InviteDialog'
+import { InviteDialog, type InviteAclDiff } from './InviteDialog'
 import {
   useDocEditor,
   FindReplaceBar,
@@ -81,12 +92,12 @@ function WordCountDisplay({ editor, estPages }: { editor: Editor; estPages: numb
     <span
       className="text-xs text-muted-foreground tabular-nums"
       data-testid="word-count"
-      title={`Letter 8.5"×11" area; body uses symmetric vertical padding. “Pages” = rough estimate (content height ÷ 11"). ~${TYPICAL_WORDS_PER_PAGE} words per full print page, varies by spacing.`}
+      title={`Letter 8.5"x11" area; body uses symmetric vertical padding. Pages = rough estimate (content height / 11"). ~${TYPICAL_WORDS_PER_PAGE} words per full print page, varies by spacing.`}
     >
       {wordCount} words
       {estPages > 0 && (
         <>
-          <span className="text-muted-foreground/50"> · </span>
+          <span className="text-muted-foreground/50"> &middot; </span>
           {estPages} pgs{perPage > 0 ? ` (~${perPage}/pg)` : ''}
         </>
       )}
@@ -107,7 +118,10 @@ function InlineTitle({
   const [value, setValue] = useState(title)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => { setValue(title) }, [title])
+  useEffect(() => {
+    setValue(title)
+  }, [title])
+
   useEffect(() => {
     if (editing && inputRef.current) {
       inputRef.current.focus()
@@ -145,7 +159,10 @@ function InlineTitle({
       onBlur={handleSave}
       onKeyDown={(e) => {
         if (e.key === 'Enter') handleSave()
-        if (e.key === 'Escape') { setValue(title); setEditing(false) }
+        if (e.key === 'Escape') {
+          setValue(title)
+          setEditing(false)
+        }
       }}
       className="text-lg font-semibold text-foreground bg-background border border-input rounded px-2 py-0.5 outline-none focus:border-primary flex-1"
       data-testid="doc-title-input"
@@ -153,15 +170,11 @@ function InlineTitle({
   )
 }
 
-// ---------------------------------------------------------------------------
-// Export Dropdown
-// ---------------------------------------------------------------------------
-
 function ExportMenu({ editor, title }: { editor: Editor; title: string }) {
   const [open, setOpen] = useState(false)
 
   const formats: { label: string; format: ExportFormat; icon: string }[] = [
-    { label: 'Markdown (.md)', format: 'markdown', icon: 'M↓' },
+    { label: 'Markdown (.md)', format: 'markdown', icon: 'M' },
     { label: 'HTML (.html)', format: 'html', icon: '</>' },
     { label: 'Plain Text (.txt)', format: 'text', icon: 'Aa' },
   ]
@@ -215,10 +228,6 @@ function ExportMenu({ editor, title }: { editor: Editor; title: string }) {
     </div>
   )
 }
-
-// ---------------------------------------------------------------------------
-// Editor Page
-// ---------------------------------------------------------------------------
 
 const CANVAS_ZOOM_STORAGE_KEY = 'docs2-editor-canvas-zoom'
 const TYPING_PRESENCE_MIN_INTERVAL_MS = 750
@@ -317,6 +326,87 @@ function SignedOutDocumentPreview({
   )
 }
 
+type AccessChangeKind = 'downgrade' | 'upgrade' | 'revoked'
+
+/**
+ * Full-screen overlay shown when the owner changes a peer's permissions
+ * mid-session. Three cases:
+ *
+ *   - `downgrade`: editor -> viewer. Block the editor surface so an
+ *     in-flight keystroke can't slip past the role boundary while Yjs and
+ *     the documents record settle on the new permission, then prompt the
+ *     user to refresh. Without this the Tiptap view rebuilds with a new
+ *     extensions array (placeholder flips) and races a stale rAF in
+ *     `DocEditorSurface`, throwing a `matchesNode` crash.
+ *
+ *   - `upgrade`: viewer -> editor. Same editor-rebuild path, so a refresh
+ *     gives the user a clean Tiptap mount with editing enabled.
+ *
+ *   - `revoked`: the owner removed this peer from collaborators entirely.
+ *     The Yjs server-side auth cache plus the locally-cached documents
+ *     row let the peer keep typing for a few seconds until they reconnect;
+ *     this overlay locks the UI immediately so no further edits are
+ *     attempted, and tells the user to refresh to leave.
+ */
+function AccessChangedOverlay({
+  kind,
+  onRefresh,
+}: {
+  kind: AccessChangeKind
+  onRefresh: () => void
+}) {
+  const title =
+    kind === 'revoked'
+      ? 'Your access has been removed'
+      : kind === 'upgrade'
+        ? 'You can now edit this document'
+        : "You're now view-only"
+  const body =
+    kind === 'revoked'
+      ? 'The owner has removed your access to this document. Refresh to continue.'
+      : kind === 'upgrade'
+        ? 'The owner gave you editor access. Refresh to reload the document with editing enabled.'
+        : 'The owner changed your access to view-only. Refresh to reload the document.'
+
+  return (
+    <div
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="docs-access-change-title"
+      className="absolute inset-0 z-[80] flex items-center justify-center bg-background/80 px-4 backdrop-blur-sm"
+    >
+      <div className="w-full max-w-sm rounded-xl border border-border bg-card p-6 text-card-foreground shadow-xl">
+        <div className="flex items-start gap-3">
+          <span
+            className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary"
+            aria-hidden
+          >
+            <AlertTriangle className="h-4 w-4" strokeWidth={2} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 id="docs-access-change-title" className="text-base font-semibold tracking-tight">
+              {title}
+            </h2>
+            <p className="mt-1.5 text-sm text-muted-foreground">{body}</p>
+          </div>
+        </div>
+        <div className="mt-5 flex justify-end">
+          <button
+            type="button"
+            autoFocus
+            onClick={onRefresh}
+            data-testid="docs-access-refresh"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+          >
+            <RefreshCw className="h-3.5 w-3.5" strokeWidth={2.25} />
+            Refresh
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function DocumentEditorPage() {
   const params = useParams<{ docId: string }>()
   const navigate = useNavigate()
@@ -331,87 +421,121 @@ export default function DocumentEditorPage() {
 
   const { records: docs, status: documentsQueryStatus } = useQuery<DocumentFields>('documents')
   const doc = docs?.find((d) => d.recordId === docId)
-
-  const { records: allShares, status: sharesQueryStatus } = useQuery<ContentShareFields>('content_shares')
-  const { put: putShare } = useMutations<ContentShareFields>('content_shares')
   const { put: putDocRecord } = useMutations<DocumentFields>('documents')
 
-  const docShares = useMemo(
-    () => (allShares ?? []).filter((s) => s.data.ContentId === docId),
-    [allShares, docId],
-  )
   const recordQueriesSettled =
-    (documentsQueryStatus === 'ready' || documentsQueryStatus === 'error') &&
-    (sharesQueryStatus === 'ready' || sharesQueryStatus === 'error')
-  const targetShare = useMemo(
-    () =>
-      user?.id
-        ? docShares.find(
-            (s) =>
-              s.data.ShareType !== 'self' &&
-              s.data.ShareTarget === user.id &&
-              s.data.OwnerId !== user.id,
-          )
-        : undefined,
-    [docShares, user?.id],
-  )
-  const ownerShare = useMemo(
-    () =>
-      user?.id
-        ? (docShares.find((s) => s.data.ShareType === 'self' && s.data.OwnerId === user.id) ??
-          docShares.find((s) => s.data.OwnerId === user.id && !s.data.ShareTarget))
-        : undefined,
-    [docShares, user?.id],
-  )
-  const readableShare = targetShare ?? ownerShare
-  const hasReadableShareForDoc = Boolean(readableShare)
-  const selfShare = readableShare
-  const docTitle = useMemo(() => {
-    const fromShare = selfShare?.data.Title?.trim()
-    const fromRecord = doc?.data.title?.trim()
-    if (fromShare) return fromShare
-    if (fromRecord) return fromRecord
-    return 'Untitled Document'
-  }, [selfShare, doc])
+    documentsQueryStatus === 'ready' || documentsQueryStatus === 'error'
+
+  const docTitle = doc?.data.title?.trim() || 'Untitled Document'
 
   const collaboratorIds = useMemo(
     () => parseIdList(doc?.data.collaborators),
     [doc?.data.collaborators],
   )
   const editorIds = useMemo(() => parseIdList(doc?.data.editors), [doc?.data.editors])
+
+  const isOwner = Boolean(doc?.data.ownerId && user?.id && doc.data.ownerId === user.id)
   const effectiveRole: 'owner' | 'editor' | 'viewer' | 'none' = useMemo(() => {
-    if (!user?.id) return 'none'
-    if (doc?.data.ownerId === user.id || ownerShare?.data.OwnerId === user.id) return 'owner'
-    if (editorIds.includes(user.id) || targetShare?.data.Permission === 'edit') return 'editor'
-    if (collaboratorIds.includes(user.id) || targetShare) return 'viewer'
+    if (!user?.id || !doc) return 'none'
+    if (isOwner) return 'owner'
+    if (editorIds.includes(user.id)) return 'editor'
+    if (collaboratorIds.includes(user.id)) return 'viewer'
     return 'none'
-  }, [
-    collaboratorIds,
-    doc?.data.ownerId,
-    editorIds,
-    ownerShare?.data.OwnerId,
-    targetShare,
-    user?.id,
-  ])
-  const isOwner = effectiveRole === 'owner'
+  }, [collaboratorIds, doc, editorIds, isOwner, user?.id])
   const policyAllowsRead = effectiveRole !== 'none'
   const policyAllowsWrite = effectiveRole === 'owner' || effectiveRole === 'editor'
 
+  /**
+   * Snapshot of the *first* concrete role seen for this docId, plus the
+   * wall-clock instant when we captured it. Used by the access-change
+   * overlay below to detect downgrade/upgrade and to ignore aclSignal
+   * payloads emitted before this session began.
+   */
+  const [initialRole, setInitialRole] = useState<typeof effectiveRole | null>(null)
+  const sessionStartedAtRef = useRef<number | null>(null)
+  useEffect(() => {
+    setInitialRole(null)
+    sessionStartedAtRef.current = null
+  }, [docId])
+  useEffect(() => {
+    if (initialRole) return
+    if (!doc || !user) return
+    if (effectiveRole === 'none') return
+    setInitialRole(effectiveRole)
+    sessionStartedAtRef.current = Date.now()
+  }, [initialRole, doc, user, effectiveRole])
+
+  /**
+   * Latched permission-change event delivered over presence. The owner
+   * publishes an `aclSignal` payload after every InviteDialog save; peers
+   * watch the owner's presence state and freeze the first signal addressed
+   * to them. This is the only mechanism that reaches a *removed* user
+   * since the docs schema's `read: 'collaborator'` rule means the
+   * documents-record update with the new collaborators list is filtered
+   * out of their RecordRoom subscription.
+   */
+  type DetectedAclEvent = { kind: AccessChangeKind; at: number }
+  const [detectedAclEvent, setDetectedAclEvent] = useState<DetectedAclEvent | null>(null)
+  useEffect(() => {
+    setDetectedAclEvent(null)
+  }, [docId])
+
+  const accessChangeKind: AccessChangeKind | null = useMemo(() => {
+    if (detectedAclEvent?.kind === 'revoked') return 'revoked'
+    if (initialRole && initialRole !== 'owner') {
+      if (effectiveRole === 'none') return 'revoked'
+      if (initialRole === 'editor' && effectiveRole === 'viewer') return 'downgrade'
+      if (initialRole === 'viewer' && effectiveRole === 'editor') return 'upgrade'
+    }
+    return detectedAclEvent?.kind ?? null
+  }, [initialRole, effectiveRole, detectedAclEvent])
+  const accessLocked = accessChangeKind !== null
+  /**
+   * Once the owner revokes/downgrades, hard-stop further writes from this
+   * peer even if Yjs/server auth hasn't caught up yet. Combined with the
+   * blocking overlay this prevents the "removed user can still type until
+   * refresh" window.
+   *
+   * Note: this only blocks writes locally. We deliberately do NOT fold
+   * `writesLockedByAcl` into `yjsAccessEnabled`, because killing the Yjs
+   * connection on downgrade pulls `synced` back to false and traps the
+   * page in the "Connecting to document…" gate — which would hide the
+   * AccessChangedOverlay entirely. For revoke, `policyAllowsRead` already
+   * flips to false (viewer/editor → none), so Yjs disconnects naturally
+   * via that path.
+   */
+  const writesLockedByAcl = accessLocked && accessChangeKind !== 'upgrade'
+
   const yjsAccessEnabled = Boolean(isSignedIn && docId && policyAllowsRead)
-  // Yjs + awareness relay (MSG_AWARENESS) so CollaborationCaret / presence updates work.
-  const { doc: ydoc, synced, canWrite, error: syncError, awareness } = useYjsRoomWithAwareness(
-    docId ?? 'unknown',
-    'content',
-    yjsAccessEnabled,
-  )
-  const effectiveCanWrite = canWrite && policyAllowsWrite
+  const {
+    doc: ydoc,
+    synced,
+    canWrite,
+    writeAuthResolved,
+    error: syncError,
+    awareness,
+  } = useYjsRoomWithAwareness(docId ?? 'unknown', 'content', yjsAccessEnabled)
+  const effectiveCanWrite = canWrite && policyAllowsWrite && !writesLockedByAcl
+  /** Read-only chrome: viewers always; editors/owners only after auth resolves and denies write. */
+  const showReadOnlyDocUx =
+    effectiveRole === 'viewer' || (policyAllowsWrite && writeAuthResolved && !canWrite) || writesLockedByAcl
 
-  /** Presence peers (PresenceRoom DO) — online avatar strip independent of full Yjs sync ordering. */
   const presenceScopeId = yjsAccessEnabled && docId ? `doc:${docId}` : '_'
-  const { peers: presencePeers, connected: presenceConnected, updateState: updatePresenceState } =
-    usePresenceRoom(presenceScopeId)
+  const {
+    peers: presencePeers,
+    connected: presenceConnected,
+    updateState: updatePresenceState,
+  } = usePresenceRoom(presenceScopeId)
 
-  const userName = user?.name ?? 'Anonymous'
+  /**
+   * "Anonymous" is the SDK fallback when a WS connect arrives without a
+   * `userName` URL param — treat it as missing and fall back to the
+   * email so the collaboration caret label and presence avatars never
+   * show the sentinel.
+   */
+  const realName =
+    user?.name && user.name !== 'Anonymous' ? user.name : undefined
+  const userName = realName ?? user?.email ?? 'Collaborator'
   const userColor = useMemo(
     () => (user?.id ? getUserColor(user.id) : '#94a3b8'),
     [user?.id],
@@ -527,7 +651,9 @@ export default function DocumentEditorPage() {
       const remoteUserId = remoteUser?.id
       if (
         remoteUserId &&
-        visiblePresenceParticipants.some((participant) => !participant.isSelf && participant.userId === remoteUserId)
+        visiblePresenceParticipants.some(
+          (participant) => !participant.isSelf && participant.userId === remoteUserId,
+        )
       ) {
         return
       }
@@ -565,11 +691,11 @@ export default function DocumentEditorPage() {
         ...(typing ? { lastTypedAt: now } : {}),
       })
 
-      // Yjs awareness powers TipTap collaboration carets. setLocalState replaces the
-      // whole object, so merge to preserve the caret extension's cursor field.
       if (!synced) return
 
-      const name = user.name || user.email || 'Anonymous'
+      const realLocalName =
+        user.name && user.name !== 'Anonymous' ? user.name : undefined
+      const name = realLocalName ?? user.email ?? 'Collaborator'
       const previousState = awareness.getLocalState()
       const nextState: Record<string, unknown> = previousState ? { ...previousState } : {}
       nextState.user = {
@@ -591,6 +717,68 @@ export default function DocumentEditorPage() {
     },
     [awareness, docId, effectiveCanWrite, synced, updatePresenceState, user, userColor],
   )
+
+  /**
+   * Permission-change fan-out via presence. Owner publishes a one-shot
+   * `aclSignal` payload after every InviteDialog save. The PresenceRoom
+   * server merges incoming state into each peer's record so this field
+   * rides alongside `mode`/`typing`/`lastTypedAt` without clobbering them.
+   * Routed through presence rather than the documents record because the
+   * docs schema's `read: 'collaborator'` rule prevents a just-removed
+   * user from seeing the new record state.
+   */
+  const handleAclChange = useCallback(
+    (diff: InviteAclDiff) => {
+      if (!isOwner) return
+      updatePresenceState({
+        aclSignal: {
+          at: Date.now(),
+          removed: diff.removedUserIds,
+          demoted: diff.demotedUserIds,
+          promoted: diff.promotedUserIds,
+        },
+      })
+    },
+    [isOwner, updatePresenceState],
+  )
+
+  /**
+   * Latch the first relevant aclSignal we see from the owner's presence
+   * peer. Compared against `sessionStartedAtRef` so refreshing into a doc
+   * whose owner already published a signal doesn't immediately trip the
+   * overlay — only signals emitted after this session began count.
+   */
+  useEffect(() => {
+    if (!user || !doc) return
+    if (detectedAclEvent) return
+    const start = sessionStartedAtRef.current
+    if (start == null) return
+    const ownerId = doc.data.ownerId
+    if (user.id === ownerId) return
+    const ownerPeer = presencePeers.find((p) => p.userId === ownerId)
+    if (!ownerPeer) return
+
+    const rawSignal = (ownerPeer.state as Record<string, unknown>).aclSignal
+    if (!rawSignal || typeof rawSignal !== 'object') return
+    const signal = rawSignal as {
+      at?: unknown
+      removed?: unknown
+      demoted?: unknown
+      promoted?: unknown
+    }
+    if (typeof signal.at !== 'number' || signal.at <= start) return
+
+    const includes = (list: unknown): boolean =>
+      Array.isArray(list) && list.some((id) => id === user.id)
+
+    if (includes(signal.removed)) {
+      setDetectedAclEvent({ kind: 'revoked', at: signal.at })
+    } else if (includes(signal.demoted)) {
+      setDetectedAclEvent({ kind: 'downgrade', at: signal.at })
+    } else if (includes(signal.promoted)) {
+      setDetectedAclEvent({ kind: 'upgrade', at: signal.at })
+    }
+  }, [presencePeers, user, doc, detectedAclEvent])
 
   useEffect(() => {
     publishPresence(typingRef.current, { force: true })
@@ -683,7 +871,6 @@ export default function DocumentEditorPage() {
     }
   }, [outlineOpen])
 
-  /** Zoom only the page canvas (not header/toolbar); Cmd/Ctrl +/- / 0. Uses CSS `zoom` where supported. */
   const [canvasZoom, setCanvasZoom] = useState(() => {
     if (typeof window === 'undefined') return 1
     try {
@@ -708,16 +895,8 @@ export default function DocumentEditorPage() {
       const mod = e.metaKey || e.ctrlKey
       if (!mod) return
 
-      const zoomIn =
-        e.key === '+' ||
-        e.key === '=' ||
-        e.code === 'Equal' ||
-        e.code === 'NumpadAdd'
-      const zoomOut =
-        e.key === '-' ||
-        e.key === '_' ||
-        e.code === 'Minus' ||
-        e.code === 'NumpadSubtract'
+      const zoomIn = e.key === '+' || e.key === '=' || e.code === 'Equal' || e.code === 'NumpadAdd'
+      const zoomOut = e.key === '-' || e.key === '_' || e.code === 'Minus' || e.code === 'NumpadSubtract'
       const zoomReset = e.key === '0' && !e.shiftKey
 
       if (!zoomIn && !zoomOut && !zoomReset) return
@@ -740,7 +919,7 @@ export default function DocumentEditorPage() {
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [])
 
-  // Template prefill — URL carries `?template=<HTML fragment>` (TipTap parses strings as HTML); only apply if empty.
+  // Template prefill — `?template=<HTML>` in the URL; only applied if the doc is empty.
   const templateApplied = useRef(false)
   useEffect(() => {
     if (!editor || !synced || templateApplied.current) return
@@ -754,88 +933,25 @@ export default function DocumentEditorPage() {
     }
   }, [editor, synced, searchParams, setSearchParams])
 
-  // Debounced metadata sync (wordCount + lastEditedAt) onto content_shares.
-  const metaTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  const metaPendingRef = useRef(false)
-  const docSharesRef = useRef(docShares)
-  docSharesRef.current = docShares
-  const editorRef = useRef(editor)
-  editorRef.current = editor
-  const canWriteRef = useRef(effectiveCanWrite)
-  canWriteRef.current = effectiveCanWrite
-
   const [estPageCount, setEstPageCount] = useState(1)
   const onPageCountChange = useCallback((n: number) => {
     setEstPageCount((prev) => (prev === n ? prev : n))
   }, [])
-  const putShareRef = useRef(putShare)
-  putShareRef.current = putShare
-  const docIdRef = useRef(docId)
-  docIdRef.current = docId
-
-  const flushShareMeta = useCallback(() => {
-    metaPendingRef.current = false
-    const ed = editorRef.current
-    const id = docIdRef.current
-    if (!ed || !canWriteRef.current || !id) return
-    const words = countWordsInDocument(ed.state.doc)
-    const now = new Date().toISOString()
-    for (const share of docSharesRef.current) {
-      putShareRef.current(share.recordId, {
-        ...share.data,
-        WordCount: words,
-        LastEditedAt: now,
-      }).catch(() => {})
-    }
-  }, [])
-
-  const handleUpdate = useCallback(() => {
-    if (!editor || !effectiveCanWrite || !docId) return
-    clearTimeout(metaTimerRef.current)
-    metaPendingRef.current = true
-    metaTimerRef.current = setTimeout(flushShareMeta, 2000)
-  }, [editor, effectiveCanWrite, docId, flushShareMeta])
-
-  useEffect(() => {
-    if (!editor) return
-    editor.on('update', handleUpdate)
-    return () => { editor.off('update', handleUpdate) }
-  }, [editor, handleUpdate])
-
-  useEffect(() => {
-    return () => {
-      clearTimeout(metaTimerRef.current)
-      if (metaPendingRef.current) {
-        metaPendingRef.current = false
-        flushShareMeta()
-      }
-    }
-  }, [flushShareMeta])
 
   const handleTitleSave = useCallback(
     async (newTitle: string) => {
-      if (doc) {
-        void putDocRecord(doc.recordId, { ...doc.data, title: newTitle }).catch(() => {})
-      }
-      for (const share of docShares) {
-        putShare(share.recordId, {
-          ...share.data,
-          Title: newTitle,
-        }).catch(() => {})
-      }
+      if (!doc) return
+      await putDocRecord(doc.recordId, { ...doc.data, title: newTitle }).catch(() => {})
     },
-    [doc, docShares, putDocRecord, putShare],
+    [doc, putDocRecord],
   )
 
-  // Share-link visitors never get the owner’s `documents` row; access is via `content_shares`.
-  // `documents` is often `[]` while loading, which is still truthy — do not show "not found" until
-  // both list queries have settled, then require either a doc record or a share for this content.
   if (!recordQueriesSettled) {
     return (
       <div data-testid="app-root" className="flex items-center justify-center h-full bg-background">
         <div className="text-center">
           <div className="w-10 h-10 border-2 border-primary/30 border-t-primary rounded-full animate-spin mx-auto mb-3" />
-          <div className="text-muted-foreground text-sm">Loading document…</div>
+          <div className="text-muted-foreground text-sm">Loading document...</div>
         </div>
       </div>
     )
@@ -849,6 +965,24 @@ export default function DocumentEditorPage() {
         showAuthModal={showAuthModal}
         onCloseAuth={() => setShowAuthModal(false)}
       />
+    )
+  }
+
+  /**
+   * If this peer was revoked mid-session (or the docs-record subscription
+   * dropped them because of `read: 'collaborator'`), short-circuit every
+   * other gate and render the overlay. Without this early return the page
+   * would fall into the "private document" or "syncError" branches below
+   * and the user would never see the refresh prompt.
+   */
+  if (accessChangeKind === 'revoked') {
+    return (
+      <div data-testid="app-root" className="relative h-full bg-background">
+        <AccessChangedOverlay
+          kind="revoked"
+          onRefresh={() => window.location.reload()}
+        />
+      </div>
     )
   }
 
@@ -873,7 +1007,7 @@ export default function DocumentEditorPage() {
     )
   }
 
-  if (!doc && !hasReadableShareForDoc) {
+  if (!doc) {
     return (
       <div data-testid="app-root" className="flex items-center justify-center h-full bg-background">
         <div className="max-w-sm px-4 text-center">
@@ -926,9 +1060,8 @@ export default function DocumentEditorPage() {
     )
   }
 
-  const editorContent = (
-    <>
-      {/* Title bar — must stack above the sticky toolbar (z-30) so export/menus are not covered */}
+  return (
+    <div data-testid="app-root" className="relative h-full bg-background flex flex-col">
       <div className="relative z-40 flex shrink-0 items-center gap-3 border-b border-border bg-card/60 px-4 py-3 backdrop-blur-sm print:hidden">
         <button
           type="button"
@@ -940,17 +1073,13 @@ export default function DocumentEditorPage() {
           <ArrowLeft className="w-4 h-4" />
         </button>
 
-        <InlineTitle
-          title={docTitle}
-          canEdit={isOwner}
-          onSave={handleTitleSave}
-        />
+        <InlineTitle title={docTitle} canEdit={isOwner} onSave={handleTitleSave} />
 
         <DocsPresence participants={visiblePresenceParticipants} typingNames={typingNames} />
 
         {editor && <WordCountDisplay editor={editor} estPages={estPageCount} />}
 
-        {isOwner && doc ? (
+        {isOwner ? (
           <button
             type="button"
             onClick={() => setInviteOpen(true)}
@@ -962,15 +1091,19 @@ export default function DocumentEditorPage() {
             Share
           </button>
         ) : effectiveRole === 'editor' ? (
-          <Badge variant="default" className="shrink-0 text-xs">Editor</Badge>
+          <Badge variant="default" className="shrink-0 text-xs">
+            Editor
+          </Badge>
         ) : effectiveRole === 'viewer' ? (
-          <Badge variant="secondary" className="shrink-0 text-xs">Viewer</Badge>
+          <Badge variant="secondary" className="shrink-0 text-xs">
+            Viewer
+          </Badge>
         ) : null}
 
         {editor && <ExportMenu editor={editor} title={docTitle} />}
       </div>
 
-      {!effectiveCanWrite && (
+      {showReadOnlyDocUx && (
         <div
           data-testid="readonly-banner"
           className="relative z-40 flex shrink-0 items-center gap-2 border-b border-border bg-muted/50 px-4 py-2 text-sm text-muted-foreground print:hidden"
@@ -978,13 +1111,10 @@ export default function DocumentEditorPage() {
           <Lock className="w-3.5 h-3.5" />
           {effectiveRole === 'viewer'
             ? 'You have view-only access to this document. Ask the owner for editor access.'
-            : doc?.data.visibility === 'private' && !policyAllowsWrite
-              ? 'This document is private. Only the owner and invited editors can make changes.'
-              : 'You are viewing this document in read-only mode.'}
+            : 'You are viewing this document in read-only mode.'}
         </div>
       )}
 
-      {/* Toolbar (sticky below header; z must stay below z-40 header) */}
       {editor && (
         <EditorToolbar
           editor={editor}
@@ -994,7 +1124,6 @@ export default function DocumentEditorPage() {
         />
       )}
 
-      {/* Editor canvas: full-width page; outline floats over the left edge */}
       <div className="relative z-0 flex min-h-0 flex-1 flex-col print:block">
         {editor && (
           <>
@@ -1025,37 +1154,78 @@ export default function DocumentEditorPage() {
           </>
         )}
       </div>
-      {doc ? (
-        <InviteDialog
-          open={inviteOpen}
-          onOpenChange={setInviteOpen}
-          doc={doc}
-          shares={docShares}
-          isOwner={isOwner}
-        />
-      ) : null}
-    </>
-  )
 
-  if (!isSignedIn) {
-    return (
-      <div data-testid="app-root" className="relative h-full overflow-hidden bg-background">
-        <div className="pointer-events-none h-full select-none blur-sm" aria-hidden="true">
-          <div className="h-full bg-background flex flex-col">{editorContent}</div>
-        </div>
-        <DocumentSignInPrompt
-          title={docTitle}
-          subtitle="This public document is protected until you sign in. Continue with DeepSpace to view it."
-          onSignIn={() => setShowAuthModal(true)}
+      <InviteDialog
+        open={inviteOpen}
+        onOpenChange={setInviteOpen}
+        doc={doc}
+        isOwner={isOwner}
+        onAclChange={handleAclChange}
+      />
+
+      {accessChangeKind && (
+        <AccessChangedOverlay
+          kind={accessChangeKind}
+          onRefresh={() => window.location.reload()}
         />
-        {showAuthModal && <AuthOverlay onClose={() => setShowAuthModal(false)} />}
-      </div>
-    )
-  }
+      )}
+    </div>
+  )
+}
+
+/**
+ * Route-level error boundary. Generouted picks up the `ErrorBoundary`
+ * export and wires it to the route's `errorElement` prop, so any
+ * render-time throw inside this route (notably the ProseMirror
+ * `matchesNode` crash when the owner toggles a peer's role mid-session)
+ * is contained here instead of blowing up the whole app.
+ *
+ * The recovery path is a hard reload — Yjs/Tiptap state at the moment
+ * of the crash is no longer trustworthy, and the new permissions on
+ * the doc are already authoritative on the server.
+ */
+export function ErrorBoundary() {
+  const error = useRouteError()
+  const message = isRouteErrorResponse(error)
+    ? `${error.status} ${error.statusText}`
+    : error instanceof Error
+      ? error.message
+      : 'Something went wrong while loading this document.'
 
   return (
-    <div data-testid="app-root" className="h-full bg-background flex flex-col">
-      {editorContent}
+    <div
+      data-testid="docs-route-error"
+      className="flex h-full flex-col items-center justify-center bg-background px-6 text-center"
+    >
+      <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-md text-card-foreground">
+        <div className="mb-3 flex items-center justify-center">
+          <span
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-primary/15 text-primary"
+            aria-hidden
+          >
+            <AlertTriangle className="h-5 w-5" strokeWidth={2} />
+          </span>
+        </div>
+        <h1 className="text-base font-semibold tracking-tight">This document needs to reload</h1>
+        <p className="mx-auto mt-1.5 max-w-xs text-sm text-muted-foreground">
+          Your access to this document just changed. Refresh to load the latest version.
+        </p>
+        <p className="mx-auto mt-3 max-w-xs truncate text-xs text-muted-foreground" title={message}>
+          {message}
+        </p>
+        <div className="mt-5 flex justify-center">
+          <button
+            type="button"
+            autoFocus
+            onClick={() => window.location.reload()}
+            data-testid="docs-route-error-refresh"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+          >
+            <RefreshCw className="h-3.5 w-3.5" strokeWidth={2.25} />
+            Refresh
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

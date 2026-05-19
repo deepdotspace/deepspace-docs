@@ -1,16 +1,20 @@
 /**
  * Document List Page
  *
- * Shows the caller's own documents or invite-only shared documents.
- * Includes search, sort, templates, favorites, and grid/list views.
+ * Shows the caller's own documents and ones invited to them. Includes
+ * search, sort, templates, favorites, and grid/list views.
  *
  * Usage:
- *   <DocumentListPage />                      // own docs
+ *   <DocumentListPage />
  *
- * Metadata (title, last edited, share fields, etc.) lives on `content_shares`
- * (workspace:default DO). The `documents` record holds content (title),
- * ownerId, and visibility. Rich content is stored in a per-doc YjsRoom
- * DO — see `DocumentEditorPage`.
+ * Metadata (title, last edited, etc.) is derived directly from the
+ * `documents` record. Each row is the source of truth for its title,
+ * collaborators, and editor list — there's no cross-app share table.
+ * The list view internally uses a synthetic `Share` view-model so the
+ * grid/list/empty-state UI can render either an owned doc or one a peer
+ * shared with us through `documents.collaborators` without changing the
+ * presentation layer. Rich content lives in per-doc YjsRoom DOs (see
+ * `DocumentEditorPage`).
  */
 
 import {
@@ -77,7 +81,6 @@ import {
   SORT_OPTIONS,
   type DocumentFields,
   type DocFolderFields,
-  type ContentShareFields,
   type DocTemplate,
   type LibraryNavSelection,
   type SortOption,
@@ -85,9 +88,33 @@ import {
 } from './types'
 import { getFavorites, saveFavorites } from './favorites'
 
-type Share = RecordData<ContentShareFields>
+/**
+ * Internal view-model that powers every grid/list tile. Built lazily from
+ * a `documents` record (own or shared-with-me) plus the local user record
+ * for owner display. Field names mirror the legacy `content_shares` shape
+ * so the existing render components below stay untouched.
+ */
+interface LocalShareData {
+  ContentType: 'document'
+  ContentId: string
+  OwnerId: string
+  OwnerName: string
+  Title: string
+  ShareType: 'self' | 'user'
+  ShareTarget: string
+  Permission: 'edit' | 'view'
+  SharedAt: string
+  SharedBy: string
+  SourceApp: string
+  LastEditedAt: string
+}
 
-function parseShareIds(raw: string | undefined): string[] {
+interface Share {
+  recordId: string
+  data: LocalShareData
+}
+
+function parseIdList(raw: string | undefined): string[] {
   if (!raw) return []
   try {
     const parsed = JSON.parse(raw)
@@ -341,8 +368,6 @@ function sortShares(shares: Share[], sortBy: SortOption): Share[] {
       return sorted.sort((a, b) => (b.data.Title ?? '').localeCompare(a.data.Title ?? ''))
     case 'created':
       return sorted.sort((a, b) => (b.data.SharedAt ?? '').localeCompare(a.data.SharedAt ?? ''))
-    case 'wordCount':
-      return sorted.sort((a, b) => (b.data.WordCount ?? 0) - (a.data.WordCount ?? 0))
     default:
       return sorted
   }
@@ -954,8 +979,7 @@ export default function DocumentListPage() {
     remove: removeFolder,
   } = useMutations<DocFolderFields>('doc_folders')
 
-  const { records: allShares } = useQuery<ContentShareFields>('content_shares')
-  const { create: createShare, put: putShare, remove: removeShare } = useMutations<ContentShareFields>('content_shares')
+  const { records: userRecords } = useQuery<{ name?: string; email?: string }>('users')
 
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -1020,57 +1044,62 @@ export default function DocumentListPage() {
     return map
   }, [documents])
 
-  /** Per-doc "self" share (or first) indexed by content id. */
-  const mySharesByContentId = useMemo(() => {
-    if (!user?.id) return new Map<string, Share>()
-    const byContentId = new Map<string, Share>()
-    for (const s of allShares ?? []) {
-      if (s.data.ContentType !== 'document' || s.data.OwnerId !== user.id) continue
-      const existing = byContentId.get(s.data.ContentId)
-      if (!existing || s.data.ShareType === 'self') {
-        byContentId.set(s.data.ContentId, s)
-      }
+  /**
+   * Stable lookup from user id -> display name. Used to render the owner
+   * column on rows that were shared with us. The `users` collection
+   * already syncs through the same RecordRoom (member.read = true), so
+   * we don't need a separate join table.
+   *
+   * "Anonymous" is the SDK's placeholder when a connect arrives without a
+   * `userName` query param — treat it the same as a missing name so the
+   * UI falls through to email instead of leaking the sentinel.
+   */
+  const userNameById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const u of userRecords ?? []) {
+      const rawName = u.data.name?.trim()
+      const name =
+        rawName && rawName !== 'Anonymous' ? rawName : u.data.email?.trim() || 'User'
+      map.set(u.recordId, name)
     }
-    return byContentId
-  }, [allShares, user?.id])
+    return map
+  }, [userRecords])
+
+  const ownDisplayName =
+    user?.name && user.name !== 'Anonymous' ? user.name : user?.email || 'Me'
 
   /**
-   * My documents list, keyed from `documents` so we never miss a new doc when
-   * the `content_shares` row and the `documents` row hit the client in either order.
+   * My-own documents synthesized into the existing share view-model so the
+   * grid/list tiles below can stay agnostic about whether the row came from
+   * a peer share or a doc I own. `LastEditedAt`/`SharedAt` fall back to the
+   * record's `updatedAt`/`createdAt` so the "Last edited" sort still works
+   * without a separate metadata table.
    */
-  const myShares = useMemo(() => {
+  const myShares = useMemo<Share[]>(() => {
     if (!user?.id) return []
     const out: Share[] = []
-    const now = new Date().toISOString()
     for (const d of documents ?? []) {
       if (d.data.ownerId !== user.id) continue
-      const s = mySharesByContentId.get(d.recordId)
-      if (s) {
-        out.push(s)
-      } else {
-        // Share row not synced yet — show the doc with metadata from the record.
-        out.push({
-          recordId: `__pending__:${d.recordId}`,
-          data: {
-            ContentType: 'document',
-            ContentId: d.recordId,
-            OwnerId: user.id,
-            OwnerName: user.name ?? 'Anonymous',
-            Title: d.data.title,
-            ShareType: 'self',
-            ShareTarget: '',
-            Permission: 'edit',
-            SharedAt: now,
-            SharedBy: user.id,
-            SourceApp: 'docs2',
-            WordCount: 0,
-            LastEditedAt: now,
-          },
-        } as Share)
-      }
+      out.push({
+        recordId: `__own__:${d.recordId}`,
+        data: {
+          ContentType: 'document',
+          ContentId: d.recordId,
+          OwnerId: user.id,
+          OwnerName: ownDisplayName,
+          Title: d.data.title,
+          ShareType: 'self',
+          ShareTarget: '',
+          Permission: 'edit',
+          SharedAt: d.createdAt,
+          SharedBy: user.id,
+          SourceApp: 'docs2',
+          LastEditedAt: d.updatedAt ?? d.createdAt,
+        },
+      })
     }
     return out
-  }, [documents, mySharesByContentId, user])
+  }, [documents, user?.id, ownDisplayName])
 
   const privateDocs = myShares
   const favoriteDocs = useMemo(
@@ -1100,10 +1129,6 @@ export default function DocumentListPage() {
     () => privateDocs.filter(shareMatchesLibraryNav),
     [privateDocs, shareMatchesLibraryNav],
   )
-  const sharesForContent = useCallback(
-    (contentId: string) => (allShares ?? []).filter((s) => s.data.ContentId === contentId),
-    [allShares],
-  )
 
   const toggleFavoriteById = useCallback((contentId: string) => {
     setFavoritesState((prev) => {
@@ -1118,35 +1143,25 @@ export default function DocumentListPage() {
   const handleCreate = useCallback(async (template?: DocTemplate) => {
     if (!user) return
     const title = template?.name ?? 'Untitled Document'
-    const now = new Date().toISOString()
     const folderIdForNew =
       libraryNav.kind === 'folder' ? libraryNav.folderId : ''
+    /**
+     * Single-record create: no parallel content_shares row is needed.
+     * The previous flow racing two creates was the source of the
+     * "unable to open document" failure on the New Document button —
+     * the YJS gate would resolve before the secondary share row reached
+     * the client and 403 the freshly-created doc.
+     */
     const recordId = await create({
       title,
       ownerId: user.id,
-      visibility: 'private',
       collaborators: '[]',
       editors: '[]',
       folderId: folderIdForNew,
     })
-    await createShare({
-      ContentType: 'document',
-      ContentId: recordId,
-      OwnerId: user.id,
-      OwnerName: user.name ?? 'Anonymous',
-      Title: title,
-      ShareType: 'self',
-      ShareTarget: '',
-      Permission: 'edit',
-      SharedAt: now,
-      SharedBy: user.id,
-      SourceApp: 'docs2',
-      WordCount: 0,
-      LastEditedAt: now,
-    })
     const query = template ? `?template=${encodeURIComponent(template.content)}` : ''
     navigate(docPath(recordId) + query)
-  }, [create, createShare, libraryNav, navigate, user])
+  }, [create, libraryNav, navigate, user])
 
   const handleCreateFromTemplate = useCallback(
     async (template: DocTemplate) => {
@@ -1172,10 +1187,8 @@ export default function DocumentListPage() {
     async (contentId: string) => {
       if (!confirm('Delete this document?')) return
       await remove(contentId)
-      const shares = sharesForContent(contentId)
-      await Promise.all(shares.map((s) => removeShare(s.recordId)))
     },
-    [remove, removeShare, sharesForContent],
+    [remove],
   )
 
   const startRename = useCallback((share: Share) => {
@@ -1191,14 +1204,10 @@ export default function DocumentListPage() {
         if (doc) {
           await put(contentId, { ...doc.data, title: trimmed }).catch(() => {})
         }
-        const shares = sharesForContent(contentId)
-        await Promise.all(
-          shares.map((s) => putShare(s.recordId, { ...s.data, Title: trimmed })),
-        )
       }
       setRenamingId(null)
     },
-    [put, putShare, renameValue, sharesForContent, docLookup],
+    [put, renameValue, docLookup],
   )
 
   const toggleSidebarCollapsed = useCallback(() => {
@@ -1277,49 +1286,42 @@ export default function DocumentListPage() {
   )
 
   const canModify = isOwnScope
-  const sharedWithMe = useMemo(() => {
+  /**
+   * Documents I'm a collaborator on (but don't own). Built directly from
+   * the docs RecordRoom — the schema's `read: 'collaborator'` rule only
+   * delivers these rows to me when I'm in the doc's `collaborators` list,
+   * so simply iterating the rows I can see is correct.
+   */
+  const sharedWithMe = useMemo<Share[]>(() => {
     if (!user?.id) return []
-    const byContentId = new Map<string, Share>()
-    for (const s of allShares ?? []) {
-      if (
-        s.data.ContentType === 'document' &&
-        s.data.OwnerId !== user.id &&
-        s.data.ShareTarget === user.id
-      ) {
-        byContentId.set(s.data.ContentId, s)
-      }
-    }
-
-    const now = new Date().toISOString()
+    const out: Share[] = []
     for (const d of documents ?? []) {
       if (d.data.ownerId === user.id) continue
-      const collaborators = parseShareIds(d.data.collaborators)
-      if (!collaborators.includes(user.id) || byContentId.has(d.recordId)) continue
-      const editors = parseShareIds(d.data.editors)
-      byContentId.set(d.recordId, {
-        recordId: `__collaborator__:${d.recordId}`,
+      const collaborators = parseIdList(d.data.collaborators)
+      if (!collaborators.includes(user.id)) continue
+      const editors = parseIdList(d.data.editors)
+      out.push({
+        recordId: `__shared__:${d.recordId}`,
         data: {
           ContentType: 'document',
           ContentId: d.recordId,
           OwnerId: d.data.ownerId,
-          OwnerName: 'Owner',
+          OwnerName: userNameById.get(d.data.ownerId) ?? 'Owner',
           Title: d.data.title,
           ShareType: 'user',
           ShareTarget: user.id,
           Permission: editors.includes(user.id) ? 'edit' : 'view',
-          SharedAt: now,
+          SharedAt: d.createdAt,
           SharedBy: d.data.ownerId,
           SourceApp: 'docs2',
-          WordCount: 0,
-          LastEditedAt: now,
+          LastEditedAt: d.updatedAt ?? d.createdAt,
         },
-      } as Share)
+      })
     }
-
-    return [...byContentId.values()].sort((a, b) =>
-      (b.data.SharedAt ?? '').localeCompare(a.data.SharedAt ?? ''),
+    return out.sort((a, b) =>
+      (b.data.LastEditedAt ?? '').localeCompare(a.data.LastEditedAt ?? ''),
     )
-  }, [allShares, documents, user?.id])
+  }, [documents, user?.id, userNameById])
   const filteredSharedWithMe = sortShares(filterSharesBySearch(sharedWithMe, searchQuery), sortBy)
   const leadingBlankForNav =
     canModify && libraryNav.kind !== 'favorites' && libraryNav.kind !== 'shared'

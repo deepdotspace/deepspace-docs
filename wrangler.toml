@@ -11,20 +11,16 @@ run_worker_first = ["/api/*", "/ws/*", "/internal/*"]
 
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["AppRecordRoom", "AppYjsRoom", "AppCanvasRoom", "AppMediaRoom", "AppPresenceRoom"]
+new_sqlite_classes = ["AppRecordRoom", "AppYjsRoom", "AppCanvasRoom", "AppPresenceRoom", "AppCronRoom"]
 
 [durable_objects]
 bindings = [
   { name = "RECORD_ROOMS", class_name = "AppRecordRoom" },
   { name = "YJS_ROOMS", class_name = "AppYjsRoom" },
   { name = "CANVAS_ROOMS", class_name = "AppCanvasRoom" },
-  { name = "MEDIA_ROOMS", class_name = "AppMediaRoom" },
   { name = "PRESENCE_ROOMS", class_name = "AppPresenceRoom" },
+  { name = "CRON_ROOMS", class_name = "AppCronRoom" },
 ]
-
-[[r2_buckets]]
-binding = "FILES"
-bucket_name = "docs2-files"
 
 [vars]
 APP_NAME = "docs2"
