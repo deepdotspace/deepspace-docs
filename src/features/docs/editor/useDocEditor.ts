@@ -10,7 +10,7 @@ import { useMemo, useEffect, useRef } from 'react'
 import { useEditor, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Collaboration from '@tiptap/extension-collaboration'
-import { CollaborationCaret } from '@tiptap/extension-collaboration-caret'
+import { CollaborationCaret } from './extensions/CollaborationCaret'
 import { Table } from '@tiptap/extension-table'
 import { TableRow } from '@tiptap/extension-table-row'
 import { TableCell } from '@tiptap/extension-table-cell'
@@ -29,25 +29,28 @@ import Subscript from '@tiptap/extension-subscript'
 import Superscript from '@tiptap/extension-superscript'
 import { SearchReplace } from './extensions/SearchReplace'
 import { SlashCommands } from './extensions/SlashCommands'
+import {
+  collaborationColorFor,
+  collaborationDisplayName,
+  type CollaborationUser,
+} from './collaboration-user'
+import type { Awareness } from 'deepspace'
 import type * as Y from 'yjs'
-
-type CollaborationUser = {
-  name?: string | null
-  color?: string | null
-}
 
 export interface UseDocEditorOptions {
   doc: Y.Doc
-  /** Optional Yjs awareness instance. When provided, remote cursors render. */
-  awareness?: { awareness?: unknown } | any
+  /** Yjs awareness instance shared with the WS hook (or null while not connected). */
+  awareness: Awareness | null
   userName: string
   userColor: string
+  userId?: string | null
+  userEmail?: string | null
   synced: boolean
   canWrite: boolean
 }
 
 function renderCollaborationCaret(user: CollaborationUser): HTMLElement {
-  const color = user.color || '#94a3b8'
+  const color = collaborationColorFor(user)
   const cursor = document.createElement('span')
   cursor.classList.add('collaboration-carets__caret')
   cursor.style.setProperty('--collaboration-caret-color', color)
@@ -55,18 +58,20 @@ function renderCollaborationCaret(user: CollaborationUser): HTMLElement {
 
   const label = document.createElement('span')
   label.classList.add('collaboration-carets__label')
-  label.style.backgroundColor = color
-  label.textContent = user.name || 'Collaborator'
+  label.style.backgroundColor = `color-mix(in srgb, ${color} 16%, #ffffff)`
+  label.style.color = color
+  label.textContent = collaborationDisplayName(user)
+
   cursor.appendChild(label)
 
   return cursor
 }
 
 function renderCollaborationSelection(user: CollaborationUser) {
-  const color = user.color || '#94a3b8'
+  const color = collaborationColorFor(user)
   return {
     class: 'ProseMirror-yjs-selection collaboration-carets__selection',
-    style: `background-color: ${color}33`,
+    style: `background-color: color-mix(in srgb, ${color} 20%, transparent)`,
   }
 }
 
@@ -94,16 +99,28 @@ export function useDocEditor({
   awareness,
   userName,
   userColor,
+  userId,
+  userEmail,
   synced,
   canWrite,
 }: UseDocEditorOptions): Editor | null {
   const fragment = useMemo(() => doc.getXmlFragment('default'), [doc])
 
-  // CollaborationCaret expects a provider object with `{ awareness }`.
+  /** CollaborationCaret expects a provider-shaped `{ awareness }` object. */
   const provider = useMemo(() => (awareness ? { awareness } : null), [awareness])
 
+  const collaborationUser = useMemo(
+    () => ({
+      name: userName,
+      color: userColor,
+      userId: userId ?? null,
+      email: userEmail ?? null,
+    }),
+    [userName, userColor, userId, userEmail],
+  )
+
   const extensions = useMemo(() => {
-    const exts: any[] = [
+    const exts: unknown[] = [
       StarterKit.configure({
         undoRedo: false,
         link: {
@@ -140,7 +157,7 @@ export function useDocEditor({
       exts.push(
         CollaborationCaret.configure({
           provider,
-          user: { name: userName, color: userColor },
+          user: collaborationUser,
           render: renderCollaborationCaret,
           selectionRender: renderCollaborationSelection,
         }),
@@ -148,13 +165,14 @@ export function useDocEditor({
     }
 
     return exts
-  }, [fragment, provider, userName, userColor])
+  }, [fragment, provider, collaborationUser])
 
   const editor = useEditor(
     {
       editable: synced && canWrite,
       immediatelyRender: false,
-      extensions,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      extensions: extensions as any,
       editorProps: {
         transformPastedHTML: stripCollaborationArtifactsFromHTML,
       },
@@ -170,6 +188,12 @@ export function useDocEditor({
       editor.setEditable(editable)
     }
   }, [editor, synced, canWrite])
+
+  /** Keep awareness user (name + color) in sync after auth resolves or profile changes. */
+  useEffect(() => {
+    if (!editor || !synced || !provider) return
+    editor.commands.updateUser(collaborationUser)
+  }, [editor, synced, provider, collaborationUser])
 
   return editor
 }

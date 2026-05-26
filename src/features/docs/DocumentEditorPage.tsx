@@ -33,8 +33,6 @@ import {
   getUserColor,
   usePresenceRoom,
 } from 'deepspace'
-import type { Transaction } from '@tiptap/pm/state'
-import { ySyncPluginKey } from '@tiptap/y-tiptap'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -64,7 +62,7 @@ import {
 import EditorToolbar from './editor/EditorToolbar'
 import { useEditorState, type Editor } from '@tiptap/react'
 import { useYjsRoomWithAwareness } from './use-yjs-room-with-awareness'
-import { DocsPresence, type DocsPresenceParticipant } from './DocsPresence'
+import { DocsPresence } from './DocsPresence'
 import {
   buildDocsPresenceParticipants,
   PRESENCE_HEARTBEAT_MS,
@@ -527,15 +525,10 @@ export default function DocumentEditorPage() {
     updateState: updatePresenceState,
   } = usePresenceRoom(presenceScopeId)
 
-  /**
-   * "Anonymous" is the SDK fallback when a WS connect arrives without a
-   * `userName` URL param — treat it as missing and fall back to the
-   * email so the collaboration caret label and presence avatars never
-   * show the sentinel.
-   */
-  const realName =
-    user?.name && user.name !== 'Anonymous' ? user.name : undefined
-  const userName = realName ?? user?.email ?? 'Collaborator'
+  const userName =
+    (user?.name && user.name !== 'Anonymous' ? user.name.trim() : '') ||
+    user?.email?.trim() ||
+    'Guest'
   const userColor = useMemo(
     () => (user?.id ? getUserColor(user.id) : '#94a3b8'),
     [user?.id],
@@ -546,6 +539,8 @@ export default function DocumentEditorPage() {
     awareness,
     userName,
     userColor,
+    userId: user?.id,
+    userEmail: user?.email,
     synced,
     canWrite: effectiveCanWrite,
   })
@@ -554,8 +549,19 @@ export default function DocumentEditorPage() {
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastPresenceSignatureRef = useRef<string | null>(null)
   const lastTypingPresenceAtRef = useRef(0)
-  const [awarenessTick, setAwarenessTick] = useState(0)
 
+  /**
+   * Presence (avatars, typing chips) goes through usePresenceRoom only.
+   *
+   * CollaborationCaret + yCursorPlugin own awareness: they write the `user`
+   * field via setLocalStateField and the `cursor` field with Y.RelativePosition
+   * anchors on every selection change. docs2 was also calling
+   * awareness.setLocalState(...) on every keystroke/focus/selectionUpdate from
+   * publishPresence — that replaces the whole awareness record, fires change
+   * events that force yCursorPlugin to re-render, and races the cursor field
+   * update mid-keystroke. doctesting never touches awareness outside the
+   * WS hook cleanup; that is why its cursors stay aligned.
+   */
   const presenceParticipants = useMemo(
     () =>
       buildDocsPresenceParticipants(
@@ -567,108 +573,27 @@ export default function DocumentEditorPage() {
     [presencePeers, user, effectiveCanWrite, awareness.clientID],
   )
 
-  const visiblePresenceParticipants = useMemo(() => {
-    const participants = [...presenceParticipants]
-    const seenUserIds = new Set(participants.map((participant) => participant.userId))
-
-    awareness.getStates().forEach((state, clientId) => {
-      if (clientId === awareness.clientID) return
-      const remoteUser = state.user as
-        | { id?: string; name?: string; email?: string; imageUrl?: string }
-        | undefined
-      const userId = remoteUser?.id ?? `awareness:${clientId}`
-      if (seenUserIds.has(userId)) return
-      seenUserIds.add(userId)
-
-      const participant: DocsPresenceParticipant = {
-        clientId,
-        userId,
-        name: remoteUser?.name?.trim() || remoteUser?.email?.trim() || 'Collaborator',
-        mode: state.mode === 'view' ? 'view' : 'edit',
-        typing: state.typing === true,
-        isSelf: false,
-      }
-      if (remoteUser?.email) participant.email = remoteUser.email
-      if (remoteUser?.imageUrl) participant.imageUrl = remoteUser.imageUrl
-      if (typeof state.lastTypedAt === 'number') participant.lastTypedAt = state.lastTypedAt
-      participants.push(participant)
-    })
-
-    return participants
-  }, [awareness, awareness.clientID, awarenessTick, presenceParticipants])
-
-  useEffect(() => {
-    const onAwarenessChange = () => setAwarenessTick((tick) => tick + 1)
-    awareness.on('change', onAwarenessChange)
-    return () => {
-      awareness.off('change', onAwarenessChange)
-    }
-  }, [awareness])
-
   const typingNames = useMemo(() => {
     const names: string[] = []
     const seen = new Set<string>()
-    const pushName = (raw: string | undefined) => {
-      const name = raw?.trim()
-      if (!name || seen.has(name)) return
-      seen.add(name)
-      names.push(name)
-    }
-
-    const isFreshAwarenessTyping = (lastTypedAt: unknown, typing: unknown): boolean => {
-      if (typing !== true) return false
-      if (typeof lastTypedAt === 'number' && Date.now() - lastTypedAt >= TYPING_STALE_MS) {
-        return false
-      }
-      return true
-    }
-
-    const awarenessStates = awareness.getStates()
-    for (const participant of visiblePresenceParticipants) {
-      if (participant.isSelf) continue
-      const presenceTyping =
-        participant.typing === true &&
-        (participant.lastTypedAt == null || Date.now() - participant.lastTypedAt < TYPING_STALE_MS)
-
-      let awarenessTyping = false
-      for (const [clientId, state] of awarenessStates) {
-        if (clientId === awareness.clientID) continue
-        const remoteUser = state.user as { id?: string } | undefined
-        if (remoteUser?.id !== participant.userId) continue
-        if (isFreshAwarenessTyping(state.lastTypedAt, state.typing)) {
-          awarenessTyping = true
-          break
-        }
-      }
-
-      if (presenceTyping || awarenessTyping) pushName(participant.name)
-    }
-
-    awarenessStates.forEach((state, clientId) => {
-      if (clientId === awareness.clientID) return
-      if (!isFreshAwarenessTyping(state.lastTypedAt, state.typing)) return
-      const remoteUser = state.user as { id?: string; name?: string } | undefined
-      const remoteUserId = remoteUser?.id
+    for (const participant of presenceParticipants) {
+      if (participant.isSelf || !participant.typing) continue
       if (
-        remoteUserId &&
-        visiblePresenceParticipants.some(
-          (participant) => !participant.isSelf && participant.userId === remoteUserId,
-        )
+        participant.lastTypedAt != null &&
+        Date.now() - participant.lastTypedAt >= TYPING_STALE_MS
       ) {
-        return
+        continue
       }
-      pushName(remoteUser?.name)
-    })
-
+      if (seen.has(participant.name)) continue
+      seen.add(participant.name)
+      names.push(participant.name)
+    }
     return names
-  }, [awareness, awareness.clientID, awarenessTick, visiblePresenceParticipants])
+  }, [presenceParticipants])
 
   const publishPresence = useCallback(
     (typing: boolean, options: { force?: boolean } = {}) => {
-      if (!docId || !user) {
-        if (synced) awareness.setLocalState(null)
-        return
-      }
+      if (!docId || !user || !synced) return
 
       const now = Date.now()
       const mode = effectiveCanWrite ? 'edit' : 'view'
@@ -690,32 +615,8 @@ export default function DocumentEditorPage() {
         typing,
         ...(typing ? { lastTypedAt: now } : {}),
       })
-
-      if (!synced) return
-
-      const realLocalName =
-        user.name && user.name !== 'Anonymous' ? user.name : undefined
-      const name = realLocalName ?? user.email ?? 'Collaborator'
-      const previousState = awareness.getLocalState()
-      const nextState: Record<string, unknown> = previousState ? { ...previousState } : {}
-      nextState.user = {
-        name,
-        color: userColor,
-        id: user.id,
-        email: user.email,
-        imageUrl: user.imageUrl,
-      }
-      nextState.mode = mode
-      nextState.typing = typing
-      if (typing) {
-        nextState.lastTypedAt = now
-      } else {
-        delete nextState.lastTypedAt
-      }
-
-      awareness.setLocalState(nextState)
     },
-    [awareness, docId, effectiveCanWrite, synced, updatePresenceState, user, userColor],
+    [docId, effectiveCanWrite, synced, updatePresenceState, user],
   )
 
   /**
@@ -787,13 +688,8 @@ export default function DocumentEditorPage() {
   useEffect(() => {
     return () => {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
-      try {
-        awareness.setLocalState(null)
-      } catch {
-        /* ignore */
-      }
     }
-  }, [awareness])
+  }, [])
 
   useEffect(() => {
     if (!synced || !docId || !user) return
@@ -803,56 +699,37 @@ export default function DocumentEditorPage() {
     return () => clearInterval(intervalId)
   }, [synced, docId, user, publishPresence])
 
-  const markTyping = useCallback(() => {
-    if (!user || !effectiveCanWrite || !synced) return
-    typingRef.current = true
-    publishPresence(true)
-
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
-    typingTimeoutRef.current = setTimeout(() => {
-      typingRef.current = false
-      publishPresence(false)
-    }, TYPING_IDLE_MS)
-  }, [user, effectiveCanWrite, publishPresence, synced])
-
-  const stopTyping = useCallback(() => {
-    typingRef.current = false
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current)
-      typingTimeoutRef.current = null
-    }
-    publishPresence(false, { force: true })
-  }, [publishPresence])
-
+  /** Typing flag — Tiptap `update` only (doctesting pattern). No selectionUpdate. */
   useEffect(() => {
     if (!editor || !effectiveCanWrite || !synced || !user) return
 
-    const onUpdate = ({ transaction }: { transaction: Transaction }) => {
-      if (!transaction.docChanged) return
-      if (transaction.getMeta(ySyncPluginKey)) return
-      markTyping()
+    const onUpdate = () => {
+      typingRef.current = true
+      publishPresence(true)
+
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
+      typingTimeoutRef.current = setTimeout(() => {
+        typingRef.current = false
+        publishPresence(false)
+      }, TYPING_IDLE_MS)
+    }
+
+    const onBlur = () => {
+      typingRef.current = false
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current)
+        typingTimeoutRef.current = null
+      }
+      publishPresence(false, { force: true })
     }
 
     editor.on('update', onUpdate)
+    editor.on('blur', onBlur)
     return () => {
       editor.off('update', onUpdate)
+      editor.off('blur', onBlur)
     }
-  }, [editor, effectiveCanWrite, synced, user, markTyping])
-
-  useEffect(() => {
-    if (!editor || !synced || !user) return
-
-    const publishCurrentPresence = () => publishPresence(typingRef.current)
-    editor.on('focus', publishCurrentPresence)
-    editor.on('selectionUpdate', publishCurrentPresence)
-    editor.on('blur', stopTyping)
-
-    return () => {
-      editor.off('focus', publishCurrentPresence)
-      editor.off('selectionUpdate', publishCurrentPresence)
-      editor.off('blur', stopTyping)
-    }
-  }, [editor, publishPresence, stopTyping, synced, user])
+  }, [editor, effectiveCanWrite, synced, user, publishPresence])
 
   const [inviteOpen, setInviteOpen] = useState(false)
   const [outlineOpen, setOutlineOpen] = useState(() => {
@@ -1049,17 +926,6 @@ export default function DocumentEditorPage() {
     )
   }
 
-  if (!synced) {
-    return (
-      <div data-testid="app-root" className="flex items-center justify-center h-full bg-background">
-        <div className="text-center">
-          <div className="w-10 h-10 border-2 border-primary/30 border-t-primary rounded-full animate-spin mx-auto mb-3" />
-          <div className="text-muted-foreground text-sm">Connecting to document...</div>
-        </div>
-      </div>
-    )
-  }
-
   return (
     <div data-testid="app-root" className="relative h-full bg-background flex flex-col">
       <div className="relative z-40 flex shrink-0 items-center gap-3 border-b border-border bg-card/60 px-4 py-3 backdrop-blur-sm print:hidden">
@@ -1075,7 +941,7 @@ export default function DocumentEditorPage() {
 
         <InlineTitle title={docTitle} canEdit={isOwner} onSave={handleTitleSave} />
 
-        <DocsPresence participants={visiblePresenceParticipants} typingNames={typingNames} />
+        <DocsPresence participants={presenceParticipants} typingNames={typingNames} />
 
         {editor && <WordCountDisplay editor={editor} estPages={estPageCount} />}
 
@@ -1118,7 +984,7 @@ export default function DocumentEditorPage() {
       {editor && (
         <EditorToolbar
           editor={editor}
-          disabled={!effectiveCanWrite}
+          disabled={!synced || !effectiveCanWrite}
           canvasZoom={canvasZoom}
           onCanvasZoomChange={setCanvasZoom}
         />

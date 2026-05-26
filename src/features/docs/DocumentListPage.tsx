@@ -72,12 +72,11 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
-  Modal,
   SearchInput,
   UserProfileButton,
 } from '../../components/ui'
+import { TemplatePickerDialog } from './TemplatePickerDialog'
 import {
-  TEMPLATES,
   SORT_OPTIONS,
   type DocumentFields,
   type DocFolderFields,
@@ -1163,12 +1162,32 @@ export default function DocumentListPage() {
     navigate(docPath(recordId) + query)
   }, [create, libraryNav, navigate, user])
 
+  const TEMPLATE_CREATE_MIN_MS = 1000
+
   const handleCreateFromTemplate = useCallback(
     async (template: DocTemplate) => {
+      if (!user) return
+      const folderIdForNew =
+        libraryNav.kind === 'folder' ? libraryNav.folderId : ''
+      const startedAt = Date.now()
+      const recordId = await create({
+        title: template.name,
+        ownerId: user.id,
+        collaborators: '[]',
+        editors: '[]',
+        folderId: folderIdForNew,
+      })
+      const elapsed = Date.now() - startedAt
+      const remaining = Math.max(0, TEMPLATE_CREATE_MIN_MS - elapsed)
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining))
+      }
       setShowTemplates(false)
-      await handleCreate(template)
+      navigate(
+        docPath(recordId) + `?template=${encodeURIComponent(template.content)}`,
+      )
     },
-    [handleCreate],
+    [create, docPath, libraryNav, navigate, user],
   )
 
   const copyShareLink = useCallback(
@@ -1602,36 +1621,6 @@ export default function DocumentListPage() {
     )
   }
 
-  function TemplatePicker() {
-    return (
-      <Modal open={showTemplates} onClose={() => setShowTemplates(false)} size="lg">
-        <Modal.Header>
-          <Modal.Title>Choose a Template</Modal.Title>
-          <Modal.Description>Start with a pre-built document structure</Modal.Description>
-        </Modal.Header>
-        <Modal.Body>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {TEMPLATES.map((template) => (
-              <button
-                key={template.name}
-                type="button"
-                onClick={() => handleCreateFromTemplate(template)}
-                data-testid={`template-${template.name.toLowerCase().replace(/\s+/g, '-')}`}
-                className="text-left bg-card border border-border rounded-xl p-4 hover:border-primary/40 hover:shadow-card transition-all"
-              >
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="text-xs font-mono bg-primary/20 text-primary rounded px-1.5 py-0.5">{template.icon}</span>
-                  <h3 className="font-semibold text-foreground">{template.name}</h3>
-                </div>
-                <p className="text-sm text-muted-foreground">{template.description}</p>
-              </button>
-            ))}
-          </div>
-        </Modal.Body>
-      </Modal>
-    )
-  }
-
   // -------------------------------------------------------------------------
   // Own-scope view
   // -------------------------------------------------------------------------
@@ -1831,7 +1820,11 @@ export default function DocumentListPage() {
           )}
         </div>
 
-        <TemplatePicker />
+        <TemplatePickerDialog
+          open={showTemplates}
+          onClose={() => setShowTemplates(false)}
+          onUseTemplate={handleCreateFromTemplate}
+        />
       </div>
     </div>
   )
