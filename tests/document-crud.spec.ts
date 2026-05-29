@@ -22,8 +22,8 @@ test.describe('Documents CRUD', () => {
       await expect(user.page.getByTestId('doc-title')).toHaveText('Untitled Document')
 
       // Type some content
-      await user.page.getByTestId('editor-content').fill('Hello world from docs2')
-      await expect(user.page.getByTestId('editor-content')).toHaveValue('Hello world from docs2')
+      await user.page.getByTestId('editor-content').fill('Hello world from docs')
+      await expect(user.page.getByTestId('editor-content')).toHaveValue('Hello world from docs')
 
       // Rename via inline title
       await user.page.getByTestId('doc-title').click()

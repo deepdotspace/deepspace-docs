@@ -3,7 +3,7 @@
  *
  * Generouted renders this around all routes.
  *
- * Single RecordRoom scope: `app:docs2`. Documents, folders, and access
+ * Single RecordRoom scope: `app:docs`. Documents, folders, and access
  * control all live here — no cross-app `workspace:default` shared scope.
  */
 
@@ -15,7 +15,7 @@ import { ToastProvider } from '../components/ui'
 import { APP_NAME, SCOPE_ID } from '../constants'
 import { schemas } from '../schemas'
 
-const THEME_KEY = 'docs2-theme'
+const THEME_KEY = 'docs-theme'
 
 export default function App() {
   useEffect(() => {

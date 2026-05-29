@@ -10,7 +10,7 @@
  * Pick a palette and replace this block to retheme the app.
  */
 @theme {
-  /* shadcn core tokens — docs2 violet palette */
+  /* shadcn core tokens — docs violet palette */
   --color-background: #0a0f1a;
   --color-foreground: #f1f5f9;
   --color-card: #0f172a;

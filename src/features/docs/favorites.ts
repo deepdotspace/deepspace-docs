@@ -1,4 +1,4 @@
-const FAVORITES_KEY = 'docs2-favorites'
+const FAVORITES_KEY = 'docs-favorites'
 
 export function getFavorites(): Set<string> {
   try {

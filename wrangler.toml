@@ -1,4 +1,4 @@
-name = "docs2"
+name = "docs"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 main = "worker.ts"
@@ -23,7 +23,7 @@ bindings = [
 ]
 
 [vars]
-APP_NAME = "docs2"
+APP_NAME = "docs"
 
 [dev]
 port = 8781

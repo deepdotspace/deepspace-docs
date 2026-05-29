@@ -24,8 +24,9 @@ import {
   Users,
 } from 'lucide-react'
 import type { DocFolderFields, LibraryNavSelection } from './types'
+import { CreateFolderDialog } from './CreateFolderDialog'
 
-const SIDEBAR_COLLAPSED_KEY = 'docs2-library-sidebar-collapsed'
+const SIDEBAR_COLLAPSED_KEY = 'docs-library-sidebar-collapsed'
 
 export function readSidebarCollapsed(): boolean {
   if (typeof window === 'undefined') return false
@@ -214,6 +215,7 @@ export function LibrarySidebar({
 }: LibrarySidebarProps) {
   const [addingFolder, setAddingFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+  const [createDialogOpen, setCreateDialogOpen] = useState(false)
   /** Defers blur commit so focus transitions / remounts don't exit rename immediately. */
   const folderRenameBlurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const folderRenameSessionStartRef = useRef(0)
@@ -444,8 +446,7 @@ export function LibrarySidebar({
                       setAddingFolder(true)
                       return
                     }
-                    const name = window.prompt('Folder name')?.trim()
-                    if (name) void onCreateFolder(name)
+                    setCreateDialogOpen(true)
                   }}
                   title={collapsed ? 'New folder' : undefined}
                   className="flex h-9 w-full min-w-0 items-center gap-0 rounded-md pl-0.5 pr-0 text-left text-[13px] text-el-muted transition-colors hover:bg-black/[0.04] hover:text-el-accent dark:hover:bg-white/[0.06]"
@@ -468,6 +469,12 @@ export function LibrarySidebar({
           </div>
         </nav>
       </div>
+
+      <CreateFolderDialog
+        open={createDialogOpen}
+        onOpenChange={setCreateDialogOpen}
+        onCreate={onCreateFolder}
+      />
     </aside>
   )
 }

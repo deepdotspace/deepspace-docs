@@ -227,7 +227,7 @@ function ExportMenu({ editor, title }: { editor: Editor; title: string }) {
   )
 }
 
-const CANVAS_ZOOM_STORAGE_KEY = 'docs2-editor-canvas-zoom'
+const CANVAS_ZOOM_STORAGE_KEY = 'docs-editor-canvas-zoom'
 const TYPING_PRESENCE_MIN_INTERVAL_MS = 750
 
 function DocumentSignInPrompt({
@@ -555,7 +555,7 @@ export default function DocumentEditorPage() {
    *
    * CollaborationCaret + yCursorPlugin own awareness: they write the `user`
    * field via setLocalStateField and the `cursor` field with Y.RelativePosition
-   * anchors on every selection change. docs2 was also calling
+   * anchors on every selection change. docs was also calling
    * awareness.setLocalState(...) on every keystroke/focus/selectionUpdate from
    * publishPresence — that replaces the whole awareness record, fires change
    * events that force yCursorPlugin to re-render, and races the cursor field
@@ -735,14 +735,14 @@ export default function DocumentEditorPage() {
   const [outlineOpen, setOutlineOpen] = useState(() => {
     if (typeof window === 'undefined') return true
     try {
-      return window.localStorage.getItem('docs2-editor-outline-open') !== '0'
+      return window.localStorage.getItem('docs-editor-outline-open') !== '0'
     } catch {
       return true
     }
   })
   useEffect(() => {
     try {
-      window.localStorage.setItem('docs2-editor-outline-open', outlineOpen ? '1' : '0')
+      window.localStorage.setItem('docs-editor-outline-open', outlineOpen ? '1' : '0')
     } catch {
       /* ignore */
     }

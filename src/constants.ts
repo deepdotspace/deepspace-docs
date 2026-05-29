@@ -1,8 +1,8 @@
 /**
- * App Constants — Docs2
+ * App Constants — Docs
  */
 
-export const APP_NAME = 'docs2'
+export const APP_NAME = 'docs'
 
 export const SCOPE_ID = `app:${APP_NAME}`
 

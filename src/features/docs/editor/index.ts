@@ -3,7 +3,7 @@
  *
  * Provides a Google-Docs style toolbar, find/replace, and export helpers
  * wired up to a Yjs-backed collaborative editor. Adapted from the
- * `@spaces/editor` package for use inside docs2.
+ * `@spaces/editor` package for use inside docs.
  */
 
 export { useDocEditor, type UseDocEditorOptions } from './useDocEditor'

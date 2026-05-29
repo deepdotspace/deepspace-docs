@@ -8,7 +8,7 @@
  *   - Shared with me — documents others have shared via content_shares
  *
  * Under the new DeepSpace architecture all docs share a single
- * `app:docs2` RecordRoom DO. Records are filtered by `ownerId`
+ * `app:docs` RecordRoom DO. Records are filtered by `ownerId`
  * (managed by the `ownerField` and collaborator RBAC) instead of
  * per-user DO scopes.
  */

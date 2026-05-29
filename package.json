@@ -1,5 +1,5 @@
 {
-  "name": "docs2",
+  "name": "docs",
   "version": "0.0.1",
   "type": "module",
   "scripts": {
@@ -63,7 +63,7 @@
     "ai": "^4.0.0",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
-    "deepspace": "0.3.10",
+    "deepspace": "0.4.0",
     "framer-motion": "^11.15.0",
     "hono": "^4.7.0",
     "lucide-react": "^0.460.0",

@@ -76,6 +76,7 @@ import {
   UserProfileButton,
 } from '../../components/ui'
 import { TemplatePickerDialog } from './TemplatePickerDialog'
+import { CreateFolderDialog } from './CreateFolderDialog'
 import {
   SORT_OPTIONS,
   type DocumentFields,
@@ -984,6 +985,7 @@ export default function DocumentListPage() {
   const [renameValue, setRenameValue] = useState('')
   const [folderRenamingId, setFolderRenamingId] = useState<string | null>(null)
   const [folderRenameValue, setFolderRenameValue] = useState('')
+  const [createFolderDialogOpen, setCreateFolderDialogOpen] = useState(false)
   const folderShortcutRenameBlurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const folderShortcutRenameSessionStartRef = useRef(0)
   const [searchQuery, setSearchQuery] = useState('')
@@ -1092,7 +1094,7 @@ export default function DocumentListPage() {
           Permission: 'edit',
           SharedAt: d.createdAt,
           SharedBy: user.id,
-          SourceApp: 'docs2',
+          SourceApp: 'docs',
           LastEditedAt: d.updatedAt ?? d.createdAt,
         },
       })
@@ -1332,7 +1334,7 @@ export default function DocumentListPage() {
           Permission: editors.includes(user.id) ? 'edit' : 'view',
           SharedAt: d.createdAt,
           SharedBy: d.data.ownerId,
-          SourceApp: 'docs2',
+          SourceApp: 'docs',
           LastEditedAt: d.updatedAt ?? d.createdAt,
         },
       })
@@ -1445,11 +1447,8 @@ export default function DocumentListPage() {
   function FolderShortcutRow() {
     if (!canModify) return null
 
-    const createFromShortcut = async () => {
-      const name = window.prompt('Folder name')
-      const trimmed = name?.trim()
-      if (!trimmed) return
-      await handleCreateFolder(trimmed)
+    const createFromShortcut = () => {
+      setCreateFolderDialogOpen(true)
     }
 
     return (
@@ -1531,7 +1530,7 @@ export default function DocumentListPage() {
         <button
           type="button"
           data-testid="folder-shortcut-new"
-          onClick={() => void createFromShortcut()}
+          onClick={createFromShortcut}
           className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-el-line bg-el-surface/20 p-3.5 text-[13px] font-semibold text-el-muted transition-all hover:border-el-accent hover:text-el-accent"
         >
           <Plus className="h-3.5 w-3.5" />
@@ -1824,6 +1823,12 @@ export default function DocumentListPage() {
           open={showTemplates}
           onClose={() => setShowTemplates(false)}
           onUseTemplate={handleCreateFromTemplate}
+        />
+
+        <CreateFolderDialog
+          open={createFolderDialogOpen}
+          onOpenChange={setCreateFolderDialogOpen}
+          onCreate={handleCreateFolder}
         />
       </div>
     </div>

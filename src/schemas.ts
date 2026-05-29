@@ -2,7 +2,7 @@
  * Collection Schemas — Docs2
  *
  * App-scope schemas served from the app's own RecordRoom DO
- * (roomId = `app:docs2`). Documents and folders live entirely
+ * (roomId = `app:docs`). Documents and folders live entirely
  * in this scope — there is no cross-app share collection. Sharing
  * is expressed via `documents.collaborators` / `documents.editors`
  * and resolved by `worker.ts` when handing out YJS access.
