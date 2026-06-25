@@ -7,7 +7,8 @@
  */
 import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { EditorContent, type Editor } from '@tiptap/react'
-import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import { Decoration, DecorationSet, type EditorView } from '@tiptap/pm/view'
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 
 const PX_PER_IN = 96
 const PAGE_W_IN = 8.5
@@ -28,6 +29,75 @@ export const TYPICAL_WORDS_PER_PAGE = 480
 type SoftPageBreak = {
   pos: number
   height: number
+}
+
+/**
+ * Block types that must never be sliced by a page boundary — there is no
+ * meaningful split point inside them, so the whole node moves to the next page
+ * instead. Related to the `page-break-inside: avoid` print rules in editor.css,
+ * though not identical: those also cover `pre` (code blocks), which we still
+ * allow to slice on screen.
+ */
+const KEEP_TOGETHER_NODES = new Set(['image', 'table', 'horizontalRule'])
+
+function isKeepTogether(node: ProseMirrorNode): boolean {
+  if (KEEP_TOGETHER_NODES.has(node.type.name)) return true
+  // A block (e.g. a paragraph) whose sole child is an image — a chart dropped
+  // on its own line — is treated as one indivisible unit.
+  const onlyChild = node.childCount === 1 ? node.firstChild : null
+  return !!onlyChild && KEEP_TOGETHER_NODES.has(onlyChild.type.name)
+}
+
+/**
+ * If the page boundary at `pageBottom` cuts through a keep-together block that
+ * would still fit on a page by itself, return the position + top offset to
+ * break *before* it, dropping the whole block onto the next page. Returns null
+ * when no such block straddles the boundary (or it is taller than a page and
+ * therefore cannot be rescued), so the caller falls back to a line-level break.
+ *
+ * `domTop` is the surface's viewport top; offsets are returned relative to it.
+ */
+function keepTogetherBreakBefore(
+  view: EditorView,
+  domTop: number,
+  pageBottom: number,
+  pageBodyHeight: number,
+  lastBreakPos: number,
+  probePos: number,
+): { pos: number; topY: number } | null {
+  const { doc } = view.state
+  const $pos = doc.resolve(Math.max(0, Math.min(probePos, doc.content.size)))
+
+  // The straddling top-level block may sit on either side of the probe — e.g.
+  // an atomic image resolves the probe to the gap before or after it. Only the
+  // depth-1 ancestor is inspected, so a keep-together node nested inside a list
+  // item or blockquote is not rescued (a rare case, left to line-level breaks).
+  const candidates: { node: ProseMirrorNode; start: number }[] = []
+  if ($pos.depth >= 1) {
+    candidates.push({ node: $pos.node(1), start: $pos.before(1) })
+  } else {
+    if ($pos.nodeBefore) {
+      candidates.push({ node: $pos.nodeBefore, start: $pos.pos - $pos.nodeBefore.nodeSize })
+    }
+    if ($pos.nodeAfter) {
+      candidates.push({ node: $pos.nodeAfter, start: $pos.pos })
+    }
+  }
+
+  for (const { node, start } of candidates) {
+    if (start <= lastBreakPos || !isKeepTogether(node)) continue
+    const el = view.nodeDOM(start)
+    if (!(el instanceof HTMLElement)) continue
+    const rect = el.getBoundingClientRect()
+    const top = rect.top - domTop
+    const bottom = rect.bottom - domTop
+    const straddles = top < pageBottom - PAGE_EPSILON_PX && bottom > pageBottom + PAGE_EPSILON_PX
+    const fitsOnAPage = rect.height <= pageBodyHeight + PAGE_EPSILON_PX
+    if (straddles && fitsOnAPage) {
+      return { pos: start, topY: top }
+    }
+  }
+  return null
 }
 
 function pageCountForBodyHeight(bodyHeight: number, pageBodyHeight: number) {
@@ -154,16 +224,59 @@ export function DocEditorSurface({ editor, onPageCountChange }: DocEditorSurface
 
           if (!posAtBoundary || posAtBoundary.pos <= lastBreakPos) break
 
-          const coords = view.coordsAtPos(posAtBoundary.pos)
-          const breakY = Math.max(coords.bottom - domRect.top, pageIndex * PAGE_STRIDE_PX)
+          // Decide *where* to break. Default: just below the last line that
+          // fits on this page. But if an unsplittable block (image / graph /
+          // table) or a single line of text straddles the page edge, break
+          // *before* it so the whole unit drops onto the next page instead of
+          // being sliced and left dangling in the gap between pages.
+          let breakPos = posAtBoundary.pos
+          let breakTopY: number
+
+          const keptWhole = keepTogetherBreakBefore(
+            view,
+            domRect.top,
+            pageBottom,
+            pageBodyHeight,
+            lastBreakPos,
+            posAtBoundary.pos,
+          )
+          if (keptWhole) {
+            breakPos = keptWhole.pos
+            breakTopY = keptWhole.topY
+          } else {
+            const coords = view.coordsAtPos(posAtBoundary.pos)
+            const lineTop = coords.top - domRect.top
+            const lineBottom = coords.bottom - domRect.top
+            if (lineTop < pageBottom - PAGE_EPSILON_PX && lineBottom > pageBottom + PAGE_EPSILON_PX) {
+              // The boundary slices through a line of text — break at the line's
+              // start so the whole line moves down rather than half-clipping.
+              // Assumes LTR: probes the left edge for the visual line start.
+              const lineStart = view.posAtCoords({
+                left: domRect.left + 1,
+                top: coords.top + 1,
+              })
+              if (lineStart && lineStart.pos > lastBreakPos) {
+                breakPos = lineStart.pos
+                breakTopY = lineTop
+              } else {
+                breakTopY = lineBottom
+              }
+            } else {
+              breakTopY = lineBottom
+            }
+          }
+
+          if (breakPos <= lastBreakPos) break
+
+          const breakY = Math.max(breakTopY, pageIndex * PAGE_STRIDE_PX)
           const breakHeight = Math.max(0, (pageIndex + 1) * PAGE_STRIDE_PX - breakY)
 
           if (breakHeight <= PAGE_EPSILON_PX) break
 
-          lastBreakPos = posAtBoundary.pos
+          lastBreakPos = breakPos
           pageBreaksRef.current = [
             ...pageBreaksRef.current,
-            { pos: posAtBoundary.pos, height: breakHeight },
+            { pos: breakPos, height: breakHeight },
           ]
           refreshDecorations()
         }
