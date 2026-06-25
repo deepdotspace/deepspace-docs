@@ -10,14 +10,15 @@
  * Pick a palette and replace this block to retheme the app.
  */
 @theme {
-  /* shadcn core tokens — docs violet palette */
+  /* shadcn core tokens — docs blue palette (matches --color-el-accent) */
   --color-background: #0a0f1a;
   --color-foreground: #f1f5f9;
   --color-card: #0f172a;
   --color-card-foreground: #f1f5f9;
   --color-popover: #0f172a;
   --color-popover-foreground: #f1f5f9;
-  --color-primary: #8b5cf6;
+  /* One brand blue: primary tracks --color-el-accent (resolved lazily at use). */
+  --color-primary: var(--color-el-accent);
   --color-primary-foreground: #ffffff;
   --color-secondary: #1e293b;
   --color-secondary-foreground: #f1f5f9;
@@ -29,7 +30,7 @@
   --color-destructive-foreground: #ffffff;
   --color-border: rgba(51, 65, 85, 0.5);
   --color-input: rgba(51, 65, 85, 0.5);
-  --color-ring: rgba(139, 92, 246, 0.5);
+  --color-ring: rgba(0, 113, 227, 0.5);
   --radius: 0.5rem;
 
   /* Extended status colors */
@@ -62,9 +63,9 @@
   --color-content-inverse: #0f172a;
   --color-border-strong: rgba(71, 85, 105, 0.5);
   --color-border-focus: var(--color-ring);
-  --color-primary-hover: #a78bfa;
-  --color-primary-muted: rgba(139, 92, 246, 0.2);
-  --color-primary-border: rgba(139, 92, 246, 0.3);
+  --color-primary-hover: #3b9aff;
+  --color-primary-muted: rgba(0, 113, 227, 0.2);
+  --color-primary-border: rgba(0, 113, 227, 0.3);
   --color-danger: var(--color-destructive);
   --color-danger-muted: rgba(239, 68, 68, 0.2);
   --color-danger-border: rgba(239, 68, 68, 0.4);
@@ -91,7 +92,7 @@
   --color-card-foreground: #1e293b;
   --color-popover: #ffffff;
   --color-popover-foreground: #1e293b;
-  --color-primary: #7c3aed;
+  --color-primary: var(--color-el-accent);
   --color-primary-foreground: #ffffff;
   --color-secondary: #f1f5f9;
   --color-secondary-foreground: #1e293b;
@@ -103,7 +104,7 @@
   --color-destructive-foreground: #ffffff;
   --color-border: rgba(226, 232, 240, 1);
   --color-input: rgba(226, 232, 240, 1);
-  --color-ring: rgba(124, 58, 237, 0.4);
+  --color-ring: rgba(0, 113, 227, 0.4);
 
   --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.08);
   --shadow-card-hover: 0 8px 24px rgba(0, 0, 0, 0.12);
@@ -117,10 +118,10 @@
   --color-content-muted: #94a3b8;
   --color-content-inverse: #f1f5f9;
   --color-border-strong: rgba(203, 213, 225, 1);
-  --color-border-focus: rgba(124, 58, 237, 0.4);
-  --color-primary-hover: #6d28d9;
-  --color-primary-muted: rgba(124, 58, 237, 0.1);
-  --color-primary-border: rgba(124, 58, 237, 0.3);
+  --color-border-focus: rgba(0, 113, 227, 0.4);
+  --color-primary-hover: #005bb8;
+  --color-primary-muted: rgba(0, 113, 227, 0.1);
+  --color-primary-border: rgba(0, 113, 227, 0.3);
   --color-danger: #dc2626;
   --color-danger-muted: rgba(220, 38, 38, 0.1);
   --color-danger-border: rgba(220, 38, 38, 0.3);

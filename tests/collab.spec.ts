@@ -65,7 +65,10 @@ test.describe('Multi-user collaboration', () => {
       const dialog = owner.page.getByRole('dialog', { name: 'Share document' })
       await expect(dialog).toBeVisible({ timeout: 10000 })
       await dialog.getByTestId('share-email-input').fill(collaborator.email)
-      await dialog.getByTestId('share-role-select').selectOption('viewer')
+      // Role picker is now a custom dropdown (Radix), not a native <select>:
+      // open it and choose the radio item rather than selectOption().
+      await dialog.getByTestId('share-role-select').click()
+      await owner.page.getByRole('menuitemradio', { name: 'Viewer' }).click()
       await dialog.getByTestId('share-add-btn').click()
       await expect(dialog.getByText(collaborator.email)).toBeVisible({ timeout: 10000 })
 
@@ -92,7 +95,10 @@ test.describe('Multi-user collaboration', () => {
         timeout: 15000,
       })
 
-      await dialog.getByRole('combobox').nth(1).selectOption('editor')
+      // Promote the collaborator's row dropdown (nth(0) is the add-invite
+      // picker, nth(1) is the first collaborator row) from viewer to editor.
+      await dialog.getByTestId(/^share-role-/).nth(1).click()
+      await owner.page.getByRole('menuitemradio', { name: 'Editor' }).click()
       await collaborator.page.goto(docUrl, { waitUntil: 'domcontentloaded' })
       const promotedEditor = collaborator.page.getByTestId('editor-content')
       await expect(promotedEditor).toBeEditable({ timeout: 15000 })

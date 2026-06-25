@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { RecordData } from 'deepspace'
 import { useMutations, useQuery, useUser } from 'deepspace'
-import { Check, Link2, Mail, ShieldCheck, UserMinus, Users } from 'lucide-react'
+import { Check, ChevronDown, Clock, Link2, Mail, ShieldCheck, UserMinus, Users } from 'lucide-react'
 import {
   Button,
   Dialog,
@@ -9,10 +9,17 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
   Input,
+  cn,
   useToast,
 } from '../../components/ui'
-import type { DocumentFields } from './types'
+import type { DocumentFields, InviteFields } from './types'
+import { parseIds, uniqueIds } from './access-ids'
 
 type InviteRole = 'viewer' | 'editor'
 type UserFields = {
@@ -50,20 +57,6 @@ interface InviteDialogProps {
   onAclChange?: (diff: InviteAclDiff) => void
 }
 
-function parseIds(raw: string | undefined): string[] {
-  if (!raw) return []
-  try {
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : []
-  } catch {
-    return []
-  }
-}
-
-function uniqueIds(ids: string[]): string[] {
-  return [...new Set(ids.filter(Boolean))]
-}
-
 function initialsFor(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean)
   if (parts.length === 0) return '?'
@@ -73,10 +66,78 @@ function initialsFor(name: string): string {
     .join('')
 }
 
+const ROLE_OPTIONS: { value: InviteRole; label: string; hint: string }[] = [
+  { value: 'editor', label: 'Editor', hint: 'Can edit and share' },
+  { value: 'viewer', label: 'Viewer', hint: 'Can view only' },
+]
+
+/**
+ * Role picker styled with the docs `el-*` tokens instead of a native
+ * `<select>`, so the menu matches the rest of the app's surfaces (see the
+ * dropdowns in DocumentListPage) rather than rendering the browser default.
+ */
+function RoleDropdown({
+  value,
+  onChange,
+  disabled,
+  size = 'md',
+  testId,
+}: {
+  value: InviteRole
+  onChange: (role: InviteRole) => void
+  disabled?: boolean
+  size?: 'sm' | 'md'
+  testId?: string
+}) {
+  const label = ROLE_OPTIONS.find((o) => o.value === value)?.label ?? 'Viewer'
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        type="button"
+        disabled={disabled}
+        data-testid={testId}
+        className={cn(
+          'inline-flex shrink-0 items-center justify-between gap-1.5 rounded-lg border border-el-line bg-el-surface font-medium text-el-text shadow-sm outline-none transition-colors hover:bg-el-bg focus-visible:ring-2 focus-visible:ring-el-accent/30 disabled:cursor-not-allowed disabled:opacity-50',
+          size === 'sm' ? 'h-8 px-2.5 text-xs' : 'h-10 px-3 text-sm',
+        )}
+      >
+        {label}
+        <ChevronDown className="h-3.5 w-3.5 text-el-muted" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="min-w-[10rem] border-el-line bg-el-surface text-el-text"
+      >
+        <DropdownMenuRadioGroup
+          value={value}
+          onValueChange={(next) => onChange(next as InviteRole)}
+        >
+          {ROLE_OPTIONS.map((opt) => (
+            <DropdownMenuRadioItem
+              key={opt.value}
+              value={opt.value}
+              className="flex-col items-start gap-0.5 focus:bg-el-bg focus:text-el-accent"
+            >
+              <span className="text-sm font-medium">{opt.label}</span>
+              <span className="text-xs text-el-muted">{opt.hint}</span>
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 export function InviteDialog({ open, onOpenChange, doc, isOwner, onAclChange }: InviteDialogProps) {
   const { user } = useUser()
   const { records: users } = useQuery<UserFields>('users')
   const { put } = useMutations<DocumentFields>('documents')
+  // Pending email invites for THIS doc. `invites` read is 'own', so the owner
+  // only ever sees invites they created; scoping by docId narrows to this doc.
+  const { records: pendingInvites } = useQuery<InviteFields>('invites', {
+    where: { docId: doc.recordId },
+  })
+  const { create: createInvite, remove: removeInvite } = useMutations<InviteFields>('invites')
   const toast = useToast()
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<InviteRole>('editor')
@@ -139,27 +200,64 @@ export function InviteDialog({ open, onOpenChange, doc, isOwner, onAclChange }: 
     if (!normalized || saving) return
 
     const target = users.find((u) => u.data.email?.trim().toLowerCase() === normalized)
-    if (!target) {
-      toast.error('User not found', 'No DeepSpace user with that email has used this app yet.')
-      return
-    }
-    if (target.recordId === doc.data.ownerId || target.recordId === user?.id) {
-      toast.info('Already has access', 'That user is the document owner.')
-      return
-    }
-    if (collaborators.includes(target.recordId)) {
-      toast.info('Already invited', `${target.data.email ?? normalized} already has access.`)
+
+    // Case 1: the email already belongs to a user who has used this app —
+    // grant access immediately by adding their user id to the access lists.
+    if (target) {
+      if (target.recordId === doc.data.ownerId || target.recordId === user?.id) {
+        toast.info('Already has access', 'That user already has access to this document.')
+        return
+      }
+      if (collaborators.includes(target.recordId)) {
+        toast.info('Already invited', `${target.data.email ?? normalized} already has access.`)
+        return
+      }
+      try {
+        const nextCollaborators = [...collaborators, target.recordId]
+        const nextEditors = role === 'editor' ? [...editors, target.recordId] : editors
+        await saveAccess(nextCollaborators, nextEditors)
+        setEmail('')
+        toast.success('Invite added', `${target.data.email ?? normalized} now has ${role} access.`)
+      } catch {
+        toast.error('Invite failed', 'The document access list was not changed. Please try again.')
+      }
       return
     }
 
+    // Case 2: no user with that email has opened this app yet. Record a pending
+    // invite keyed by email; `claimInvites` resolves it to real access the
+    // first time they sign in. No user needs to exist for this to succeed.
+    if (pendingInvites.some((i) => i.data.email?.trim().toLowerCase() === normalized)) {
+      toast.info('Already invited', `${normalized} has a pending invite.`)
+      return
+    }
+    setSaving(true)
     try {
-      const nextCollaborators = [...collaborators, target.recordId]
-      const nextEditors = role === 'editor' ? [...editors, target.recordId] : editors
-      await saveAccess(nextCollaborators, nextEditors)
+      await createInvite({ docId: doc.recordId, email: normalized, role })
       setEmail('')
-      toast.success('Invite added', `${target.data.email ?? normalized} now has ${role} access.`)
+      toast.success(
+        'Invite saved',
+        `Share the link with ${normalized} — they'll get ${role} access the first time they sign in.`,
+      )
     } catch {
-      toast.error('Invite failed', 'The document access list was not changed. Please try again.')
+      toast.error('Invite failed', 'Could not save the invite. Please try again.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const cancelInvite = async (inviteId: string) => {
+    if (saving) return
+    // Set `saving` so the row's cancel button disables while the remove is in
+    // flight — otherwise a rapid double-click fires a second `removeInvite` on
+    // the already-deleted row and surfaces a spurious error toast.
+    setSaving(true)
+    try {
+      await removeInvite(inviteId)
+    } catch {
+      toast.error('Could not cancel invite', 'The pending invite is still active. Please try again.')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -221,7 +319,8 @@ export function InviteDialog({ open, onOpenChange, doc, isOwner, onAclChange }: 
         <DialogHeader>
           <DialogTitle>Share document</DialogTitle>
           <DialogDescription>
-            Invite DeepSpace users by the email address on their account.
+            Invite anyone by email. If they haven&apos;t joined yet, they&apos;ll get access
+            automatically the first time they sign in.
           </DialogDescription>
         </DialogHeader>
 
@@ -263,15 +362,7 @@ export function InviteDialog({ open, onOpenChange, doc, isOwner, onAclChange }: 
                   className="h-10 border-el-line bg-transparent pl-9 text-el-text"
                 />
               </div>
-              <select
-                value={role}
-                onChange={(e) => setRole(e.target.value as InviteRole)}
-                data-testid="share-role-select"
-                className="h-10 rounded-lg border border-el-line bg-el-surface px-3 text-sm font-medium text-el-text outline-none focus-visible:ring-2 focus-visible:ring-el-accent/30"
-              >
-                <option value="editor">Editor</option>
-                <option value="viewer">Viewer</option>
-              </select>
+              <RoleDropdown value={role} onChange={setRole} testId="share-role-select" />
               <Button
                 type="button"
                 onClick={() => void addInvite()}
@@ -335,18 +426,13 @@ export function InviteDialog({ open, onOpenChange, doc, isOwner, onAclChange }: 
                         {collaborator.data.email ?? 'No email'}
                       </div>
                     </div>
-                    <select
+                    <RoleDropdown
                       value={userRole}
-                      onChange={(e) =>
-                        void setCollaboratorRole(collaborator.recordId, e.target.value as InviteRole)
-                      }
+                      onChange={(next) => void setCollaboratorRole(collaborator.recordId, next)}
                       disabled={saving}
-                      data-testid={`share-role-${collaborator.recordId}`}
-                      className="h-8 rounded-lg border border-el-line bg-el-surface px-2 text-xs font-medium text-el-text outline-none"
-                    >
-                      <option value="editor">Editor</option>
-                      <option value="viewer">Viewer</option>
-                    </select>
+                      size="sm"
+                      testId={`share-role-${collaborator.recordId}`}
+                    />
                     <button
                       type="button"
                       onClick={() => void removeCollaborator(collaborator.recordId)}
@@ -361,7 +447,42 @@ export function InviteDialog({ open, onOpenChange, doc, isOwner, onAclChange }: 
                 )
               })}
 
-              {collaboratorRecords.length === 0 ? (
+              {pendingInvites.map((invite) => {
+                const inviteEmail = invite.data.email?.trim() || 'Unknown email'
+                const inviteRole: InviteRole = invite.data.role === 'editor' ? 'editor' : 'viewer'
+                return (
+                  <div
+                    key={invite.recordId}
+                    className="flex items-center gap-3 rounded-xl border border-dashed border-el-line p-3"
+                    data-testid={`pending-invite-${invite.recordId}`}
+                  >
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-el-bg text-el-muted">
+                      <Clock className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium">{inviteEmail}</div>
+                      <div className="truncate text-xs text-el-muted">
+                        Pending &middot; gets {inviteRole} access on first sign-in
+                      </div>
+                    </div>
+                    <span className="inline-flex items-center gap-1 rounded-full border border-el-line px-2.5 py-1 text-xs font-medium text-el-muted">
+                      Pending
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void cancelInvite(invite.recordId)}
+                      disabled={saving}
+                      className="rounded-lg p-1.5 text-red-600 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+                      title="Cancel invite"
+                      aria-label={`Cancel invite for ${inviteEmail}`}
+                    >
+                      <UserMinus className="h-4 w-4" />
+                    </button>
+                  </div>
+                )
+              })}
+
+              {collaboratorRecords.length === 0 && pendingInvites.length === 0 ? (
                 <p className="rounded-xl border border-el-line p-3 text-sm text-el-muted">
                   Only the owner can access this document.
                 </p>

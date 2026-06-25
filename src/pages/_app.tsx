@@ -14,6 +14,7 @@ import { RecordProvider, RecordScope } from 'deepspace'
 import { ToastProvider } from '../components/ui'
 import { APP_NAME, SCOPE_ID } from '../constants'
 import { schemas } from '../schemas'
+import { useClaimInvites } from '../features/docs/use-claim-invites'
 
 const THEME_KEY = 'docs-theme'
 
@@ -49,6 +50,8 @@ export default function App() {
 
 function AuthGate({ children }: { children: ReactNode }) {
   const { isLoaded } = useAuth()
+  // Resolve any pending email invites into real collaborator access on sign-in.
+  useClaimInvites()
 
   if (!isLoaded) {
     return (

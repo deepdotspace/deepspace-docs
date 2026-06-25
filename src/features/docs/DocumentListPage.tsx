@@ -141,125 +141,6 @@ const SHARED_COL_ACCESS = 'w-24 shrink-0 flex justify-end'
 const FOLDER_SHORTCUT_RENAME_BLUR_DEFER_MS = 200
 const FOLDER_SHORTCUT_RENAME_BLUR_GRACE_MS = 520
 
-function SignedOutLibraryGate({
-  onSignIn,
-  showAuthModal,
-  onCloseAuth,
-}: {
-  onSignIn: () => void
-  showAuthModal: boolean
-  onCloseAuth: () => void
-}) {
-  const previewCards = ['Project plan', 'Meeting notes', 'Product brief', 'Research notes']
-
-  return (
-    <div
-      data-testid="app-root"
-      className="relative flex min-h-full overflow-hidden bg-el-bg selection:bg-el-accent/20"
-    >
-      <div className="pointer-events-none flex min-h-full w-full select-none opacity-80 blur-sm" aria-hidden="true">
-        <aside className="hidden w-72 shrink-0 border-r border-el-line bg-el-surface/70 p-5 lg:block">
-          <div className="mb-8 flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-el-accent/10 text-el-accent">
-              <FileText className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="h-4 w-24 rounded bg-el-line" />
-              <div className="mt-2 h-3 w-32 rounded bg-el-line/70" />
-            </div>
-          </div>
-          <div className="space-y-2">
-            {['All documents', 'Favorites', 'Uncategorized'].map((label, i) => (
-              <div
-                key={label}
-                className={`flex items-center gap-3 rounded-xl px-3 py-2.5 ${
-                  i === 0 ? 'bg-el-accent/10' : 'bg-transparent'
-                }`}
-              >
-                <div className="h-4 w-4 rounded bg-el-line" />
-                <div className="h-3 w-32 rounded bg-el-line" />
-              </div>
-            ))}
-          </div>
-          <div className="mt-8">
-            <div className="mb-3 h-3 w-20 rounded bg-el-line" />
-            <div className="space-y-2">
-              {[0, 1, 2].map((i) => (
-                <div key={i} className="flex items-center gap-2 rounded-lg px-3 py-2">
-                  <Folder className="h-4 w-4 text-el-muted" />
-                  <div className="h-3 w-28 rounded bg-el-line" />
-                </div>
-              ))}
-            </div>
-          </div>
-        </aside>
-
-        <main className="min-h-0 min-w-0 flex-1 overflow-hidden">
-          <div className="px-6 pb-10 pt-9 md:px-12 md:pb-12 md:pt-10 lg:px-16 lg:pb-16 lg:pt-10">
-            <div className="mb-8 flex min-w-0 items-center justify-between gap-4">
-              <div>
-                <div className="h-10 w-72 rounded bg-el-line" />
-                <div className="mt-3 h-4 w-44 rounded bg-el-line/80" />
-              </div>
-              <div className="h-9 w-24 rounded-full bg-el-accent" />
-            </div>
-            <div className="mb-10 flex gap-3">
-              <div className="h-11 flex-1 rounded-xl bg-el-surface" />
-              <div className="h-11 w-32 rounded-xl bg-el-surface" />
-              <div className="h-11 w-32 rounded-xl bg-el-accent" />
-            </div>
-            <div className="mb-6 flex items-center justify-between">
-              <div className="h-3 w-28 rounded bg-el-line" />
-              <div className="h-9 w-36 rounded-lg bg-el-surface" />
-            </div>
-            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
-              {previewCards.map((title, i) => (
-                <div key={title} className="rounded-xl border border-el-line bg-el-surface p-4 shadow-sm">
-                  <div className="mb-4 flex items-center justify-between">
-                    <FileText className="h-5 w-5 text-el-muted" />
-                    <div className="h-6 w-14 rounded-full bg-el-line" />
-                  </div>
-                  <div className="mb-3 h-4 rounded bg-el-line" style={{ width: `${60 + i * 8}%` }} />
-                  <div className="space-y-2">
-                    <div className="h-3 rounded bg-el-line/80" />
-                    <div className="h-3 w-4/5 rounded bg-el-line/80" />
-                    <div className="h-3 w-2/3 rounded bg-el-line/80" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </main>
-      </div>
-
-      <div className="absolute inset-0 z-30 flex items-center justify-center bg-el-bg/35 px-4 backdrop-blur-[2px]">
-        <div className="w-full max-w-md rounded-2xl border border-el-line bg-el-surface/95 p-6 text-center shadow-2xl backdrop-blur-xl">
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-el-accent/10 text-el-accent">
-            <Lock className="h-5 w-5" />
-          </div>
-          <p className="mb-2 text-xs font-bold uppercase tracking-[0.22em] text-el-muted">
-            Welcome to Docs2
-          </p>
-          <h1 className="mb-2 text-2xl font-bold tracking-tight text-el-text">Sign in to continue</h1>
-          <p className="mb-5 text-sm leading-6 text-el-muted">
-            Your document library stays ready in the background. Sign in with DeepSpace to view and edit your docs.
-          </p>
-          <button
-            type="button"
-            onClick={onSignIn}
-            data-testid="library-sign-in-continue"
-            className="w-full rounded-full bg-el-accent px-4 py-2.5 text-sm font-bold text-white shadow-sm transition-opacity hover:opacity-90"
-          >
-            Sign in to continue
-          </button>
-        </div>
-      </div>
-
-      {showAuthModal && <AuthOverlay onClose={onCloseAuth} />}
-    </div>
-  )
-}
-
 function FolderShortcutRenameField({
   folderId,
   renameFolderValue,
@@ -1013,6 +894,13 @@ export default function DocumentListPage() {
     }
   }, [])
 
+  // Clear the auth-modal flag once signed in. AuthOverlay self-unmounts on
+  // success but doesn't call onClose, so without this the stale `true` would
+  // re-open the modal on a later sign-out.
+  useEffect(() => {
+    if (isSignedIn) setShowAuthModal(false)
+  }, [isSignedIn])
+
   const displayFirstName = user?.name?.trim().split(/\s+/)[0] ?? 'there'
 
   const myFolders = useMemo(() => {
@@ -1142,7 +1030,12 @@ export default function DocumentListPage() {
   }, [])
 
   const handleCreate = useCallback(async (template?: DocTemplate) => {
-    if (!user) return
+    // Defer the login wall: prompt to sign in only when an anonymous visitor
+    // actually tries to create, rather than gating the whole library on arrival.
+    if (!user) {
+      setShowAuthModal(true)
+      return
+    }
     const title = template?.name ?? 'Untitled Document'
     const folderIdForNew =
       libraryNav.kind === 'folder' ? libraryNav.folderId : ''
@@ -1168,7 +1061,10 @@ export default function DocumentListPage() {
 
   const handleCreateFromTemplate = useCallback(
     async (template: DocTemplate) => {
-      if (!user) return
+      if (!user) {
+        setShowAuthModal(true)
+        return
+      }
       const folderIdForNew =
         libraryNav.kind === 'folder' ? libraryNav.folderId : ''
       const startedAt = Date.now()
@@ -1241,7 +1137,10 @@ export default function DocumentListPage() {
 
   const handleCreateFolder = useCallback(
     async (name: string) => {
-      if (!user) return
+      if (!user) {
+        setShowAuthModal(true)
+        return
+      }
       await createFolder({
         name,
         ownerId: user.id,
@@ -1347,16 +1246,6 @@ export default function DocumentListPage() {
   const leadingBlankForNav =
     canModify && libraryNav.kind !== 'favorites' && libraryNav.kind !== 'shared'
 
-  if (isOwnScope && !isSignedIn) {
-    return (
-      <SignedOutLibraryGate
-        onSignIn={() => setShowAuthModal(true)}
-        showAuthModal={showAuthModal}
-        onCloseAuth={() => setShowAuthModal(false)}
-      />
-    )
-  }
-
   const ownDocTileProps: OwnDocTileSharedProps = {
     docLookup,
     favorites,
@@ -1401,7 +1290,6 @@ export default function DocumentListPage() {
           >
             Sign In
           </button>
-          {showAuthModal && <AuthOverlay onClose={() => setShowAuthModal(false)} />}
         </>
       )
     }
@@ -1448,6 +1336,12 @@ export default function DocumentListPage() {
     if (!canModify) return null
 
     const createFromShortcut = () => {
+      // Show the auth prompt on first click rather than opening the dialog
+      // and only revealing the wall on submit.
+      if (!user) {
+        setShowAuthModal(true)
+        return
+      }
       setCreateFolderDialogOpen(true)
     }
 
@@ -1628,23 +1522,23 @@ export default function DocumentListPage() {
       data-testid="app-root"
       className="flex min-h-full overflow-hidden bg-el-bg selection:bg-el-accent/20"
     >
-      {user ? (
-        <LibrarySidebar
-          selection={libraryNav}
-          onSelect={setLibraryNav}
-          folders={myFolders}
-          collapsed={sidebarCollapsed}
-          onToggleCollapsed={toggleSidebarCollapsed}
-          onCreateFolder={handleCreateFolder}
-          onDeleteFolder={handleDeleteFolder}
-          onStartRenameFolder={startRenameFolder}
-          renamingFolderId={folderRenamingId}
-          renameFolderValue={folderRenameValue}
-          setRenameFolderValue={setFolderRenameValue}
-          onCommitRenameFolder={commitRenameFolder}
-          onCancelRenameFolder={cancelRenameFolder}
-        />
-      ) : null}
+      <LibrarySidebar
+        selection={libraryNav}
+        onSelect={setLibraryNav}
+        folders={myFolders}
+        canCreate={!!user}
+        onRequireAuth={() => setShowAuthModal(true)}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={toggleSidebarCollapsed}
+        onCreateFolder={handleCreateFolder}
+        onDeleteFolder={handleDeleteFolder}
+        onStartRenameFolder={startRenameFolder}
+        renamingFolderId={folderRenamingId}
+        renameFolderValue={folderRenameValue}
+        setRenameFolderValue={setFolderRenameValue}
+        onCommitRenameFolder={commitRenameFolder}
+        onCancelRenameFolder={cancelRenameFolder}
+      />
 
       <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         <div className="px-6 pb-10 pt-9 md:px-12 md:pb-12 md:pt-10 lg:px-16 lg:pb-16 lg:pt-10">
@@ -1831,6 +1725,14 @@ export default function DocumentListPage() {
           onCreate={handleCreateFolder}
         />
       </div>
+
+      {/*
+       * Auth modal lives at the page root so it surfaces from any trigger
+       * (New doc / folder / Sign In) regardless of auth state — not only the
+       * signed-out ProfileMenu branch, which would miss the transient
+       * `isSignedIn && !user` window.
+       */}
+      {showAuthModal && <AuthOverlay onClose={() => setShowAuthModal(false)} />}
     </div>
   )
 }

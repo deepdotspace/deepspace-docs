@@ -69,7 +69,7 @@ export function buildReadOnlyTools(executor: ToolExecutor) {
     const safeName = def.name.replace('.', '_')
     tools[safeName] = tool({
       description: def.description,
-      parameters: buildZodSchema(def),
+      inputSchema: buildZodSchema(def),
       execute: async (params) => executor(def.name, params as Record<string, unknown>),
     })
   }

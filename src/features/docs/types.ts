@@ -14,6 +14,23 @@ export interface DocFolderFields {
   ownerId: string
 }
 
+/** A pending email-based share, resolved to a collaborator on first sign-in. */
+export interface InviteFields {
+  /** Target document recordId. */
+  docId: string
+  /** Invitee email, stored lowercased. */
+  email: string
+  /** Role granted once claimed. */
+  role: 'viewer' | 'editor'
+  /**
+   * Creating user id (the doc owner). Stamped server-side (userBound + immutable)
+   * and never trusted from the client — optional here only because the create
+   * call omits it. Do not make this required, or the
+   * `createInvite({ docId, email, role })` call in InviteDialog won't type-check.
+   */
+  invitedBy?: string
+}
+
 /** Sidebar scope for filtering the library. */
 export type LibraryNavSelection =
   | { kind: 'all' }

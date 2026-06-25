@@ -29,7 +29,7 @@ import {
   CronRoom,
 } from 'deepspace/worker'
 import type { ActionTools, ActionResult, DOManifest, DOBindings } from 'deepspace/worker'
-import { streamText } from 'ai'
+import { streamText, stepCountIs } from 'ai'
 import { actions } from './src/actions/index.js'
 import { tasks as cronTasks, runTask as runCronTask } from './src/cron.js'
 import { schemas } from './src/schemas.js'
@@ -439,7 +439,12 @@ app.post('/api/actions/:name', async (c) => {
   const params = await c.req.json<Record<string, unknown>>()
   const callerJwt = c.req.header('Authorization')!.slice(7)
   const tools = createActionTools(c.env, auth.userId, callerJwt)
-  const result = await action({ userId: auth.userId, params, tools, env: c.env, callerJwt })
+  // Inject verified identity claims so actions can trust them without a
+  // round-trip to the (WS-written, possibly not-yet-created) users row.
+  // Spread first so a client-supplied `authEmail` can never override the
+  // verified value.
+  const authedParams = { ...params, authEmail: auth.claims.email ?? null }
+  const result = await action({ userId: auth.userId, params: authedParams, tools, env: c.env, callerJwt })
   return c.json(result as unknown as Record<string, unknown>)
 })
 
@@ -481,14 +486,14 @@ app.post('/api/ai/chat', async (c) => {
     system: buildSystemPrompt(c.env.APP_NAME, schemas),
     messages: messages as any,
     tools: tools as any,
-    maxSteps: 5,
+    stopWhen: stepCountIs(5),
     onError: ({ error }) => {
       console.error('[ai-chat] streamText error:', error)
     },
   })
 
-  return result.toDataStreamResponse({
-    getErrorMessage: (error) => {
+  return result.toUIMessageStreamResponse({
+    onError: (error) => {
       console.error('[ai-chat] response error:', error)
       return error instanceof Error ? error.message : String(error)
     },

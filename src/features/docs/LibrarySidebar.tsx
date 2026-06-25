@@ -189,6 +189,14 @@ export interface LibrarySidebarProps {
   collapsed: boolean
   onToggleCollapsed: () => void
   onCreateFolder: (name: string) => void | Promise<void>
+  /**
+   * Whether the viewer is signed in and can create folders. When false the
+   * sidebar still renders (signed-out visitors browse the library), but the
+   * New folder control routes to `onRequireAuth` instead of mutating.
+   */
+  canCreate?: boolean
+  /** Surface the sign-in prompt when a signed-out visitor hits a gated action. */
+  onRequireAuth?: () => void
   onDeleteFolder: (folderId: string) => void | Promise<void>
   onStartRenameFolder: (folder: RecordData<DocFolderFields>) => void
   renamingFolderId: string | null
@@ -205,6 +213,8 @@ export function LibrarySidebar({
   collapsed,
   onToggleCollapsed,
   onCreateFolder,
+  canCreate = true,
+  onRequireAuth,
   onDeleteFolder,
   onStartRenameFolder,
   renamingFolderId,
@@ -442,6 +452,12 @@ export function LibrarySidebar({
                   type="button"
                   data-testid="new-folder-btn"
                   onClick={() => {
+                    // Signed-out visitors get the sign-in prompt rather than an
+                    // inline input that would silently no-op on submit.
+                    if (!canCreate) {
+                      onRequireAuth?.()
+                      return
+                    }
                     if (!collapsed) {
                       setAddingFolder(true)
                       return
