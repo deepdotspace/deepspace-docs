@@ -26,9 +26,21 @@ invites into real collaborator grants on the caller's verified email.
 
 ## Run your own
 
-Apps like this are built by handing a prompt to a coding agent — start at
-[deep.space/get-started](https://deep.space/get-started), or scaffold directly:
-`npm create deepspace@latest my-app`.
+Deploy your own copy in three commands:
+
+```sh
+npm install
+npx deepspace login     # one-time, opens a browser tab
+npx deepspace deploy    # -> <name>.app.space
+```
+
+Auth, the database, real-time sync, and hosting all come from DeepSpace, so
+there is nothing else to configure. Your subdomain is the `name` field in
+`wrangler.toml`; change it for your own deployment.
+
+Or build something new: apps like this are made by handing a prompt to a
+coding agent — start at [deep.space/get-started](https://deep.space/get-started),
+or scaffold from scratch: `npm create deepspace@latest my-app`.
 
 ---
 *DeepSpace Docs was built end-to-end by an AI agent on the DeepSpace SDK.
