@@ -23,6 +23,7 @@ bindings = [
 ]
 
 [vars]
+DEEPSPACE_APP_ID = "app_01KZ4FDYTDQS0C0QFWHNTYKHQX"
 APP_NAME = "docs"
 
 [dev]
