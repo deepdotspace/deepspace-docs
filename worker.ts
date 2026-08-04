@@ -19,6 +19,8 @@ import { cors } from 'hono/cors'
 import {
   verifyJwt,
   createDeepSpaceAI,
+  apiWorkerFetch,
+  authWorkerFetch,
 } from 'deepspace/worker'
 import type { JwtVerifierConfig, VerifyResult } from 'deepspace/worker'
 import {
@@ -84,6 +86,7 @@ export interface Env extends DOBindings<typeof __DO_MANIFEST__> {
   AUTH_JWT_ISSUER: string
   AUTH_WORKER_URL: string
   APP_NAME: string
+  ALLOW_DEBUG_ROUTES?: string
   DEEPSPACE_APP_ID: string
   OWNER_USER_ID: string
   /**
@@ -163,6 +166,27 @@ app.get('/api/auth/oauth-complete', async (c) => {
 })
 
 // ---------------------------------------------------------------------------
+app.all('/api/auth/sign-out', async (c) => {
+  try {
+    await authWorkerFetch(c.env, '/api/auth/sign-out', {
+      method: c.req.method,
+      headers: c.req.raw.headers,
+      body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : undefined,
+    })
+  } catch {
+    // Always expire the app-scoped cookie, even if auth-worker is unavailable.
+  }
+
+  return new Response(JSON.stringify({ success: true }), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json',
+      'Set-Cookie': '__Secure-better-auth.session_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0',
+    },
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Auth proxy → auth-worker (same-origin cookies)
 // ---------------------------------------------------------------------------
 
@@ -183,6 +207,15 @@ app.all('/api/auth/*', async (c) => {
 })
 
 // ---------------------------------------------------------------------------
+// Debug routes are available only when explicitly enabled. Their Durable
+// Object handlers are unauthenticated, so production remains closed by default.
+app.all('/api/debug/*', async (c) => {
+  if (c.env.ALLOW_DEBUG_ROUTES !== 'true') return c.notFound()
+  const stub = c.env.RECORD_ROOMS.get(c.env.RECORD_ROOMS.idFromName(`app:${c.env.APP_NAME}`))
+  return stub.fetch(c.req.raw)
+})
+
+// ---------------------------------------------------------------------------
 // Integrations proxy → api-worker
 // ---------------------------------------------------------------------------
 
@@ -192,6 +225,41 @@ app.get('/api/integrations', async (c) => {
     return new Response(res.body, { status: res.status, headers: res.headers })
   } catch {
     return c.json({ error: 'Failed to fetch integration catalog' }, 502)
+  }
+})
+
+// OAuth connection management is always user-billed.
+app.get('/api/integrations/status', async (c) => {
+  const auth = await resolveAuth(c.req.raw, c.env)
+  if (!auth) return c.json({ error: 'Sign in required' }, 401)
+  const token = c.req.header('Authorization')?.slice(7)
+  try {
+    const res = await apiWorkerFetch(c.env, '/api/integrations/status', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    return new Response(res.body, { status: res.status, headers: res.headers })
+  } catch {
+    return c.json({ error: 'Status proxy failed' }, 502)
+  }
+})
+
+app.delete('/api/integrations/oauth/:provider/disconnect', async (c) => {
+  const auth = await resolveAuth(c.req.raw, c.env)
+  if (!auth) return c.json({ error: 'Sign in required' }, 401)
+  const token = c.req.header('Authorization')?.slice(7)
+  const provider = c.req.param('provider')
+  try {
+    const res = await apiWorkerFetch(
+      c.env,
+      `/api/integrations/oauth/${encodeURIComponent(provider)}/disconnect`,
+      {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      },
+    )
+    return new Response(res.body, { status: res.status, headers: res.headers })
+  } catch {
+    return c.json({ error: 'Disconnect proxy failed' }, 502)
   }
 })
 
@@ -541,6 +609,51 @@ app.all('/api/files/*', async (c) => {
   }
 
   return new Response(resp.body, { status: resp.status, headers: resp.headers })
+})
+
+// ---------------------------------------------------------------------------
+// Same-origin browser proxy for authenticated DeepSpace billing hooks.
+const BROWSER_PROXY_ROUTES = [
+  ['GET', '/_deepspace/subscriptions/me'],
+  ['POST', '/_deepspace/subscriptions/checkout'],
+  ['POST', '/_deepspace/subscriptions/portal'],
+  ['POST', '/_deepspace/charges/create'],
+  ['GET', '/_deepspace/charges/me'],
+] as const
+
+app.all('/_deepspace/*', async (c) => {
+  const url = new URL(c.req.url)
+  const method = c.req.method
+  const allowed = BROWSER_PROXY_ROUTES.some(
+    ([allowedMethod, path]) => allowedMethod === method && path === url.pathname,
+  )
+  if (!allowed) return c.json({ error: 'not_found' }, 404)
+
+  const auth = await resolveAuth(c.req.raw, c.env)
+  const userId = auth?.userId
+  if (!userId) return c.json({ error: 'unauthorized' }, 401)
+
+  const forwardedParams = new URLSearchParams(url.search)
+  forwardedParams.set('appId', c.env.DEEPSPACE_APP_ID)
+  const queryString = forwardedParams.toString()
+  const apiPath =
+    url.pathname.replace('/_deepspace/', '/api/') + (queryString ? `?${queryString}` : '')
+
+  const headers = new Headers(c.req.raw.headers)
+  headers.delete('x-user-id')
+  headers.delete('x-app-identity-token')
+  headers.delete('x-app-id')
+  if (c.env.APP_IDENTITY_TOKEN) {
+    headers.set('x-app-identity-token', c.env.APP_IDENTITY_TOKEN)
+    headers.set('x-app-id', c.env.DEEPSPACE_APP_ID)
+  }
+  headers.set('x-user-id', userId)
+
+  return apiWorkerFetch(c.env, apiPath, {
+    method,
+    headers,
+    body: ['GET', 'HEAD'].includes(method) ? undefined : c.req.raw.body,
+  })
 })
 
 // ---------------------------------------------------------------------------
