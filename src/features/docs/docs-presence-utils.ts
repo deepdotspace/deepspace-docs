@@ -20,16 +20,18 @@ function peerToDocsParticipant(p: PresencePeerClient): DocsPresenceParticipant {
   const state = p.state
   const mode: DocsPresenceParticipant['mode'] = state.mode === 'view' ? 'view' : 'edit'
   const lastTypedAt = typeof state.lastTypedAt === 'number' ? state.lastTypedAt : undefined
+  // A presence peer carries userId, userName, joinedAt and its own state —
+  // email and avatar url are not part of the peer record, so a remote
+  // participant renders with an initials avatar. Only the local row (built
+  // below from the signed-in user) has an email and image to show.
   const participant: DocsPresenceParticipant = {
     clientId: clientIdFromUserId(p.userId),
     userId: p.userId,
-    name: p.userName?.trim() || p.userEmail?.trim() || 'Guest',
+    name: p.userName?.trim() || 'Guest',
     mode,
     typing: state.typing === true,
     isSelf: false,
   }
-  if (p.userEmail) participant.email = p.userEmail
-  if (p.userImageUrl) participant.imageUrl = p.userImageUrl
   if (lastTypedAt != null) participant.lastTypedAt = lastTypedAt
   return participant
 }
