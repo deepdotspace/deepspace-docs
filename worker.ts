@@ -21,6 +21,8 @@ import {
   createDeepSpaceAI,
   apiWorkerFetch,
   authWorkerFetch,
+  authenticatedRoomRequest,
+  resolveAppRole as sdkResolveAppRole,
 } from 'deepspace/worker'
 import type { JwtVerifierConfig, VerifyResult } from 'deepspace/worker'
 import {
@@ -37,6 +39,8 @@ import { tasks as cronTasks, runTask as runCronTask } from './src/cron.js'
 import { schemas } from './src/schemas.js'
 import { integrations } from './src/integrations.js'
 import { buildSystemPrompt, buildReadOnlyTools } from './src/ai/tools.js'
+import { DOCS_ASSISTANT_MODEL_ID, CHAT_MAX_OUTPUT_TOKENS } from './src/ai/models.js'
+import { reachesUserNamespace } from './src/lib/file-proxy-scope.js'
 
 // =============================================================================
 // DO Manifest — declares all Durable Objects for dynamic deploy bindings
@@ -207,10 +211,16 @@ app.all('/api/auth/*', async (c) => {
 })
 
 // ---------------------------------------------------------------------------
-// Debug routes are available only when explicitly enabled. Their Durable
-// Object handlers are unauthenticated, so production remains closed by default.
+// Debug routes are available only when explicitly enabled, and then only to a
+// verified app admin: the Durable Object handlers behind them can read and
+// mutate any record in the app, so the flag alone is not a gate.
 app.all('/api/debug/*', async (c) => {
   if (c.env.ALLOW_DEBUG_ROUTES !== 'true') return c.notFound()
+  const auth = await resolveAuth(c.req.raw, c.env)
+  if (!auth) return c.json({ error: 'unauthorized' }, 401)
+  if ((await resolveAppRole(c.env, auth.userId)) !== 'admin') {
+    return c.json({ error: 'forbidden' }, 403)
+  }
   const stub = c.env.RECORD_ROOMS.get(c.env.RECORD_ROOMS.idFromName(`app:${c.env.APP_NAME}`))
   return stub.fetch(c.req.raw)
 })
@@ -310,26 +320,49 @@ app.all('/api/integrations/:name/:endpoint', async (c) => {
 // ---------------------------------------------------------------------------
 
 /**
- * The DO reads identity (userId, userName, userEmail, userImageUrl, role)
- * off the URL it receives and trusts it. We always strip whatever the
- * client put on the URL and re-apply identity from the verified JWT —
- * three states: no token = anonymous (the SDK's allowAnonymous flow),
- * invalid token = 401, valid token = JWT identity.
+ * The SDK's `resolveAppRole()` addresses the RecordRoom as
+ * `app:${DEEPSPACE_APP_ID}`. This app's room — the one holding the `users`
+ * rows this reads — is keyed `app:${APP_NAME}` (SCOPE_ID in
+ * src/constants.ts), and that is the id every other `idFromName` call in
+ * this file uses. Hand the helper the name the room is actually stored
+ * under. Every call site must go through this wrapper, never the raw
+ * export: a bare call reads an empty room and returns 'viewer' for
+ * everyone but the owner.
+ */
+function resolveAppRole(env: Env, userId: string) {
+  return sdkResolveAppRole(
+    {
+      RECORD_ROOMS: env.RECORD_ROOMS,
+      DEEPSPACE_APP_ID: env.APP_NAME,
+      OWNER_USER_ID: env.OWNER_USER_ID,
+    },
+    userId,
+  )
+}
+
+/**
+ * Identity on the worker → Durable Object hop travels in verified headers.
+ * `authenticatedRoomRequest` strips `token`, the legacy identity query
+ * params and the inbound identity headers off whatever the client sent,
+ * then re-applies `userId`/`userName`/`userEmail`/`userImageUrl` from the
+ * verified JWT (plus `role`, when a route supplies one). Three states:
+ * no token = anonymous (the SDK's allowAnonymous flow), invalid token =
+ * 401, valid token = JWT identity.
  *
- * Forwarding `userName`/`userEmail`/`userImageUrl` is what lets the
- * RecordRoom's `registerUser` write a real display name into the `users`
- * row on first connect; without these the SDK falls back to "Anonymous"
- * and that name gets stamped into every UI surface that reads the row
- * (owner labels in the doc list, the InviteDialog, etc.).
+ * The forwarded name is what lets the RecordRoom's `registerUser` write a
+ * real display name into the `users` row on first connect; without it the
+ * SDK falls back to "Anonymous" and that name gets stamped into every UI
+ * surface that reads the row (owner labels in the doc list, the
+ * InviteDialog, etc.).
  */
 function wsRoute(
   doNamespace: (env: Env) => DurableObjectNamespace,
-  extraParams?: (auth: VerifyResult) => Record<string, string>,
+  extraIdentity?: (auth: VerifyResult, env: Env) => { role?: string } | Promise<{ role?: string }>,
 ) {
   return async (c: any) => {
     const id = c.req.param('roomId') ?? c.req.param('docId') ?? c.req.param('scopeId')
-    const url = new URL(c.req.url)
-    const token = url.searchParams.get('token')
+    if (!id) return new Response('Not found', { status: 404 })
+    const token = new URL(c.req.url).searchParams.get('token')
 
     let auth: VerifyResult | null = null
     if (token) {
@@ -337,27 +370,14 @@ function wsRoute(
       if (!auth) return new Response('Unauthorized', { status: 401 })
     }
 
-    const doUrl = new URL(c.req.url)
-    doUrl.searchParams.delete('token')
-    for (const k of ['userId', 'userName', 'userEmail', 'userImageUrl', 'role']) {
-      doUrl.searchParams.delete(k)
-    }
-
-    if (auth) {
-      doUrl.searchParams.set('userId', auth.userId)
-      if (auth.claims.name) doUrl.searchParams.set('userName', auth.claims.name)
-      if (auth.claims.email) doUrl.searchParams.set('userEmail', auth.claims.email)
-      if (auth.claims.image) doUrl.searchParams.set('userImageUrl', auth.claims.image)
-      if (extraParams) {
-        for (const [k, v] of Object.entries(extraParams(auth))) {
-          doUrl.searchParams.set(k, v)
-        }
-      }
-    }
-
+    const roomRequest = authenticatedRoomRequest(
+      c.req.raw,
+      auth,
+      auth ? await extraIdentity?.(auth, c.env) : undefined,
+    )
     const ns = doNamespace(c.env)
     const stub = ns.get(ns.idFromName(id))
-    return stub.fetch(new Request(doUrl.toString(), c.req.raw))
+    return stub.fetch(roomRequest)
   }
 }
 
@@ -465,35 +485,29 @@ app.get('/ws/yjs/:docId', async (c) => {
   const role = await resolveDocsYjsRole(c.env, docId, auth.userId)
   if (!role) return new Response('Forbidden', { status: 403 })
 
-  // Strip anything the client sent and re-apply identity from the JWT.
-  // The YjsRoom DO uses `userName`/`userEmail`/`userImageUrl` to populate
-  // the awareness "user" field that drives collaboration carets and
-  // presence avatars; without these every label reads "Anonymous".
-  const doUrl = new URL(c.req.url)
-  doUrl.searchParams.delete('token')
-  for (const k of ['userId', 'userName', 'userEmail', 'userImageUrl', 'role']) {
-    doUrl.searchParams.delete(k)
-  }
-  doUrl.searchParams.set('userId', auth.userId)
-  doUrl.searchParams.set('role', role)
-  if (auth.claims.name) doUrl.searchParams.set('userName', auth.claims.name)
-  if (auth.claims.email) doUrl.searchParams.set('userEmail', auth.claims.email)
-  if (auth.claims.image) doUrl.searchParams.set('userImageUrl', auth.claims.image)
+  // Identity is re-applied from the verified JWT by
+  // `authenticatedRoomRequest`, which also strips anything the client sent
+  // on the URL or in headers. The YjsRoom DO uses `userName` to populate
+  // the awareness "user" field that drives collaboration carets; without
+  // it every label reads "Anonymous". `role` is this document's own ACL
+  // decision, not the app-wide role.
+  const roomRequest = authenticatedRoomRequest(c.req.raw, auth, { role })
 
   const stub = c.env.YJS_ROOMS.get(c.env.YJS_ROOMS.idFromName(docId))
-  return stub.fetch(new Request(doUrl.toString(), c.req.raw))
+  return stub.fetch(roomRequest)
 })
 
-app.get('/ws/canvas/:docId', wsRoute((env) => env.CANVAS_ROOMS, () => ({ role: 'member' })))
+app.get(
+  '/ws/canvas/:docId',
+  wsRoute(
+    (env) => env.CANVAS_ROOMS,
+    async (auth, env) => ({ role: await resolveAppRole(env, auth.userId) }),
+  ),
+)
 
-app.get('/ws/presence/:scopeId', wsRoute(
-  (env) => env.PRESENCE_ROOMS,
-  (auth) => ({
-    ...(auth.claims.name ? { userName: auth.claims.name } : {}),
-    ...(auth.claims.email ? { userEmail: auth.claims.email } : {}),
-    ...(auth.claims.image ? { userImageUrl: auth.claims.image } : {}),
-  }),
-))
+// Name/email/avatar are forwarded by `authenticatedRoomRequest` from the
+// verified JWT, so presence needs no extra identity of its own.
+app.get('/ws/presence/:scopeId', wsRoute((env) => env.PRESENCE_ROOMS))
 
 // ---------------------------------------------------------------------------
 // Server actions
@@ -550,11 +564,16 @@ app.post('/api/ai/chat', async (c) => {
     return res.json()
   })
 
+  // The model id and the output budget both come from `src/ai/models.ts`.
+  // Never inline either here: a retired literal is a provider 404 that only
+  // shows up when a user opens the assistant, and an unset budget makes the
+  // proxy reserve credit against the model's 128k ceiling.
   const result = streamText({
-    model: anthropic('claude-sonnet-4-20250514') as any,
+    model: anthropic(DOCS_ASSISTANT_MODEL_ID) as any,
     system: buildSystemPrompt(c.env.APP_NAME, schemas),
     messages: messages as any,
     tools: tools as any,
+    maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS,
     stopWhen: stepCountIs(5),
     onError: ({ error }) => {
       console.error('[ai-chat] streamText error:', error)
@@ -575,16 +594,36 @@ app.post('/api/ai/chat', async (c) => {
 
 app.all('/api/files/*', async (c) => {
   const auth = await resolveAuth(c.req.raw, c.env)
-  const userId = auth?.userId ?? null
+
+  // Nothing in this app stores or reads a scoped R2 file — no useR2Files, no
+  // upload, no stored file URL rendered anywhere — so there is no public read
+  // to serve and the whole mount requires a verified JWT: reads, listing,
+  // uploads and deletes alike.
+  if (!auth) return c.json({ error: 'Unauthorized' }, 401)
 
   const url = new URL(c.req.url)
+
+  // A verified identity is not enough on its own: the platform resolves
+  // scope 'app' to `apps/<resourceId>/`, scope 'self' to a strict descendant
+  // of it, and admits keys with `key.startsWith(prefix)`. See
+  // src/lib/file-proxy-scope.ts for why that lets one signed-in user reach
+  // another's files and what this refuses.
+  if (reachesUserNamespace(url.pathname, url.searchParams)) {
+    return c.json({ error: 'Access denied: key belongs to a private scope' }, 403)
+  }
+
   const platformUrl = new URL(c.req.url)
   platformUrl.pathname = url.pathname.replace('/api/files', '/internal/files')
 
   const headers = new Headers(c.req.raw.headers)
+  // Strip any caller-supplied identity before setting our own. Only a
+  // JWT-derived userId may reach the platform-worker — otherwise an
+  // unauthenticated caller could send `x-user-id: <victim>` with `?scope=self`
+  // and the platform would resolve, and let it mutate, the victim's prefix.
+  headers.delete('x-user-id')
   headers.set('x-app-identity-token', c.env.APP_IDENTITY_TOKEN)
   headers.set('x-app-id', c.env.DEEPSPACE_APP_ID)
-  if (userId) headers.set('x-user-id', userId)
+  headers.set('x-user-id', auth.userId)
 
   const resp = await c.env.PLATFORM_WORKER.fetch(
     new Request(platformUrl.toString(), {
@@ -667,7 +706,12 @@ app.get('*', async (c) => {
     if (url.pathname.startsWith('/assets/') || /\.[^/]+$/.test(url.pathname)) {
       return response
     }
-    url.pathname = '/index.html'
+    // A FILE, not a client route: a miss must 404. Returning the shell here
+    // is HTML parsed as JavaScript, which is a blank page.
+    if (url.pathname.slice(url.pathname.lastIndexOf('/') + 1).includes('.')) {
+      return c.json({ error: 'not_found' }, 404)
+    }
+    url.pathname = '/'
     return c.env.ASSETS.fetch(new Request(url.toString(), c.req.raw))
   }
   return response
