@@ -39,6 +39,7 @@ import { tasks as cronTasks, runTask as runCronTask } from './src/cron.js'
 import { schemas } from './src/schemas.js'
 import { integrations } from './src/integrations.js'
 import { buildSystemPrompt, buildReadOnlyTools } from './src/ai/tools.js'
+import { reachesUserNamespace } from './src/lib/file-proxy-scope.js'
 
 // =============================================================================
 // DO Manifest — declares all Durable Objects for dynamic deploy bindings
@@ -587,16 +588,36 @@ app.post('/api/ai/chat', async (c) => {
 
 app.all('/api/files/*', async (c) => {
   const auth = await resolveAuth(c.req.raw, c.env)
-  const userId = auth?.userId ?? null
+
+  // Nothing in this app stores or reads a scoped R2 file — no useR2Files, no
+  // upload, no stored file URL rendered anywhere — so there is no public read
+  // to serve and the whole mount requires a verified JWT: reads, listing,
+  // uploads and deletes alike.
+  if (!auth) return c.json({ error: 'Unauthorized' }, 401)
 
   const url = new URL(c.req.url)
+
+  // A verified identity is not enough on its own: the platform resolves
+  // scope 'app' to `apps/<resourceId>/`, scope 'self' to a strict descendant
+  // of it, and admits keys with `key.startsWith(prefix)`. See
+  // src/lib/file-proxy-scope.ts for why that lets one signed-in user reach
+  // another's files and what this refuses.
+  if (reachesUserNamespace(url.pathname, url.searchParams)) {
+    return c.json({ error: 'Access denied: key belongs to a private scope' }, 403)
+  }
+
   const platformUrl = new URL(c.req.url)
   platformUrl.pathname = url.pathname.replace('/api/files', '/internal/files')
 
   const headers = new Headers(c.req.raw.headers)
+  // Strip any caller-supplied identity before setting our own. Only a
+  // JWT-derived userId may reach the platform-worker — otherwise an
+  // unauthenticated caller could send `x-user-id: <victim>` with `?scope=self`
+  // and the platform would resolve, and let it mutate, the victim's prefix.
+  headers.delete('x-user-id')
   headers.set('x-app-identity-token', c.env.APP_IDENTITY_TOKEN)
   headers.set('x-app-id', c.env.DEEPSPACE_APP_ID)
-  if (userId) headers.set('x-user-id', userId)
+  headers.set('x-user-id', auth.userId)
 
   const resp = await c.env.PLATFORM_WORKER.fetch(
     new Request(platformUrl.toString(), {
